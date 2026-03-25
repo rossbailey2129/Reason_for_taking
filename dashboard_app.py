@@ -32,6 +32,37 @@ NUMERIC_METRICS = [
 
 BAR_FILL = "#e6f1fc"
 CHART_TEXT = "#36485c"
+# Plotly + browser; load Besley via _inject_app_font() for Streamlit UI
+FONT_FAMILY = "Besley, Georgia, serif"
+
+
+def _inject_app_font() -> None:
+    """Load Besley from Google Fonts and apply across the Streamlit app."""
+    st.markdown(
+        """
+        <link rel="preconnect" href="https://fonts.googleapis.com">
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link href="https://fonts.googleapis.com/css2?family=Besley:ital,wght@0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
+        <style>
+            .stApp, .stApp * {
+                font-family: 'Besley', Georgia, serif !important;
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _plot_base_font() -> dict:
+    return {"family": FONT_FAMILY, "color": CHART_TEXT}
+
+
+def _tick_font() -> dict:
+    return {"family": FONT_FAMILY, "color": CHART_TEXT}
+
+
+def _axis_title_font() -> dict:
+    return {"font": {"family": FONT_FAMILY, "color": CHART_TEXT}}
 
 
 def _bar_data_labels(values: pd.Series, metric_col: str) -> list[str]:
@@ -149,6 +180,7 @@ def main() -> None:
         layout="wide",
         initial_sidebar_state="expanded",
     )
+    _inject_app_font()
     st.title("Taxonomy and health interest associations")
     st.caption(
         "Filter by taxonomy levels, then inspect recommendation count and share "
@@ -478,21 +510,23 @@ def main() -> None:
                 text=bar_lbl,
                 textposition="inside",
                 insidetextanchor="end",
-                textfont=dict(color=CHART_TEXT, size=12),
+                textangle=-90,
+                textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=12),
             )
             fig.update_layout(
-                font=dict(color=CHART_TEXT),
-                yaxis={
-                    "categoryorder": "total ascending",
-                    "tickfont": {"color": CHART_TEXT},
-                    "title": {"font": {"color": CHART_TEXT}},
-                },
-                xaxis={
-                    "tickfont": {"color": CHART_TEXT},
-                    "title": {"font": {"color": CHART_TEXT}},
-                },
+                font=_plot_base_font(),
+                hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
+                yaxis={"categoryorder": "total ascending"},
                 height=max(400, 24 * len(sub)),
                 margin=dict(l=200),
+            )
+            fig.update_xaxes(
+                tickfont=_tick_font(),
+                title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+            )
+            fig.update_yaxes(
+                tickfont=_tick_font(),
+                title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -534,21 +568,23 @@ def main() -> None:
                 text=bar_lbl_hi,
                 textposition="inside",
                 insidetextanchor="end",
-                textfont=dict(color=CHART_TEXT, size=12),
+                textangle=-90,
+                textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=12),
             )
             fig2.update_layout(
-                font=dict(color=CHART_TEXT),
-                yaxis={
-                    "categoryorder": "total ascending",
-                    "tickfont": {"color": CHART_TEXT},
-                    "title": {"font": {"color": CHART_TEXT}},
-                },
-                xaxis={
-                    "tickfont": {"color": CHART_TEXT},
-                    "title": {"font": {"color": CHART_TEXT}},
-                },
+                font=_plot_base_font(),
+                hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
+                yaxis={"categoryorder": "total ascending"},
                 height=max(400, 24 * len(sub_hi)),
                 margin=dict(l=220),
+            )
+            fig2.update_xaxes(
+                tickfont=_tick_font(),
+                title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+            )
+            fig2.update_yaxes(
+                tickfont=_tick_font(),
+                title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
             )
             st.plotly_chart(fig2, use_container_width=True)
 
@@ -600,12 +636,26 @@ def main() -> None:
                     y=pivot.index.tolist(),
                     colorscale="Blues",
                     hoverongaps=False,
-                    colorbar=dict(title=cell_metric.replace("_", " ")),
+                    colorbar=dict(
+                        title=dict(
+                            text=cell_metric.replace("_", " "),
+                            font=dict(family=FONT_FAMILY, color=CHART_TEXT, size=12),
+                        ),
+                        tickfont=dict(family=FONT_FAMILY, color=CHART_TEXT),
+                    ),
                 )
             )
             n_rows = len(pivot.index)
             fig_hm.update_layout(
-                xaxis=dict(side="bottom", tickangle=-45),
+                font=_plot_base_font(),
+                hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
+                xaxis=dict(
+                    side="bottom",
+                    tickangle=-45,
+                    tickfont=_tick_font(),
+                    title=_axis_title_font(),
+                ),
+                yaxis=dict(tickfont=_tick_font(), title=_axis_title_font()),
                 height=max(500, 14 * n_rows),
                 margin=dict(l=200, b=200),
             )
@@ -646,9 +696,19 @@ def main() -> None:
                 float(ys.min()), float(ys.max()), floor=0.0, ceiling=1.0
             )
             fig_s.update_layout(
+                font=_plot_base_font(),
+                hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                 height=640,
                 xaxis=dict(range=[sx0, sx1]),
                 yaxis=dict(range=[sy0, sy1]),
+            )
+            fig_s.update_xaxes(
+                tickfont=_tick_font(),
+                title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+            )
+            fig_s.update_yaxes(
+                tickfont=_tick_font(),
+                title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
             )
             st.plotly_chart(fig_s, use_container_width=True)
 
