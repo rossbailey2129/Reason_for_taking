@@ -36,30 +36,6 @@ CHART_TEXT = "#36485c"
 FONT_FAMILY = "Besley, Georgia, serif"
 
 
-def _bar_end_pad(value: float, axis_max: float) -> str:
-    """
-    Figure spaces (U+2007) after the value; with insidetextanchor='end' they sit at the
-    bar tip and push digits left. Scale down pad for short bars so tiny bars are not
-    mostly padding.
-    """
-    if axis_max <= 0:
-        return ""
-    ratio = max(0.0, min(1.0, float(value) / float(axis_max)))
-    if ratio < 0.04:
-        n = 0
-    elif ratio < 0.12:
-        n = 1
-    elif ratio < 0.28:
-        n = 2
-    elif ratio < 0.5:
-        n = 3
-    elif ratio < 0.75:
-        n = 4
-    else:
-        n = 5
-    return "\u2007" * n
-
-
 def _inject_app_font() -> None:
     """Load Besley from Google Fonts and apply across the Streamlit app."""
     st.markdown(
