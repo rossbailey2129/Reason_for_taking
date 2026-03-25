@@ -103,21 +103,42 @@ def _axis_title_font() -> dict:
     return {"font": {"family": FONT_FAMILY, "color": CHART_TEXT}}
 
 
-def _bar_data_labels(values: pd.Series, metric_col: str) -> list[str]:
-    """Format values shown at the inside end of horizontal bars."""
+def _bar_labels_and_textposition(
+    values: pd.Series, metric_col: str, num_bars: int
+) -> tuple[list[str], list[str]]:
+    """
+    Bar value text plus per-bar textposition ('inside' | 'outside').
+    Uses heuristics for when an inside label would likely clip (short bar vs max,
+    many bars = thinner rows, long number string); outside labels skip figure-space pad.
+    """
     vals_f = values.astype(float)
     axis_max = float(vals_f.max()) if len(vals_f) else 1.0
     if axis_max <= 0:
         axis_max = 1.0
-    labels: list[str] = []
-    for v in vals_f:
-        f = float(v)
-        pad = _bar_end_pad(f, axis_max)
+
+    density = min(1.0, max(0.0, (num_bars - 18) / 72.0))
+
+    texts: list[str] = []
+    positions: list[str] = []
+
+    for f in vals_f:
+        f = float(f)
+        ratio = f / axis_max
         if "SHARE" in metric_col:
-            labels.append(f"{f:.3f}{pad}")
+            body = f"{f:.3f}"
         else:
-            labels.append(f"{int(round(f)):,}{pad}")
-    return labels
+            body = f"{int(round(f)):,}"
+
+        min_ratio_for_inside = 0.10 + 0.22 * density
+        len_bias = min(0.14, max(0.0, (len(body) - 3) * 0.035))
+        threshold = min_ratio_for_inside + len_bias
+
+        use_outside = ratio < threshold
+        pad = "" if use_outside else _bar_end_pad(f, axis_max)
+        texts.append(f"{body}{pad}")
+        positions.append("outside" if use_outside else "inside")
+
+    return texts, positions
 
 
 def _bar_label_font_size(num_bars: int) -> int:
@@ -550,27 +571,32 @@ def main() -> None:
                 labels={rank_metric: rank_metric.replace("_", " ")},
                 color_discrete_sequence=[BAR_FILL],
             )
-            bar_lbl = _bar_data_labels(sub[rank_metric], rank_metric)
             n_bars = len(sub)
+            bar_lbl, bar_pos = _bar_labels_and_textposition(
+                sub[rank_metric], rank_metric, n_bars
+            )
             lbl_px = _bar_label_font_size(n_bars)
+            any_outside = any(p == "outside" for p in bar_pos)
             fig.update_traces(
                 marker=dict(
                     color=BAR_FILL,
                     line=dict(width=0.5, color=CHART_TEXT),
                 ),
                 text=bar_lbl,
-                textposition="inside",
+                textposition=bar_pos,
                 insidetextanchor="end",
                 textangle=0,
                 constraintext="none",
+                cliponaxis=False,
                 textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px),
+                outsidetextfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px),
             )
             fig.update_layout(
                 font=_plot_base_font(),
                 hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                 yaxis={"categoryorder": "total ascending"},
                 height=max(400, 24 * n_bars),
-                margin=dict(l=200),
+                margin=dict(l=200, r=140 if any_outside else 48),
                 uniformtext_minsize=12,
                 uniformtext_mode="show",
             )
@@ -613,27 +639,32 @@ def main() -> None:
                 labels={rank_metric_hi: rank_metric_hi.replace("_", " ")},
                 color_discrete_sequence=[BAR_FILL],
             )
-            bar_lbl_hi = _bar_data_labels(sub_hi[rank_metric_hi], rank_metric_hi)
             n_bars_hi = len(sub_hi)
+            bar_lbl_hi, bar_pos_hi = _bar_labels_and_textposition(
+                sub_hi[rank_metric_hi], rank_metric_hi, n_bars_hi
+            )
             lbl_px_hi = _bar_label_font_size(n_bars_hi)
+            any_out_hi = any(p == "outside" for p in bar_pos_hi)
             fig2.update_traces(
                 marker=dict(
                     color=BAR_FILL,
                     line=dict(width=0.5, color=CHART_TEXT),
                 ),
                 text=bar_lbl_hi,
-                textposition="inside",
+                textposition=bar_pos_hi,
                 insidetextanchor="end",
                 textangle=0,
                 constraintext="none",
+                cliponaxis=False,
                 textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px_hi),
+                outsidetextfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px_hi),
             )
             fig2.update_layout(
                 font=_plot_base_font(),
                 hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                 yaxis={"categoryorder": "total ascending"},
                 height=max(400, 24 * n_bars_hi),
-                margin=dict(l=220),
+                margin=dict(l=220, r=140 if any_out_hi else 48),
                 uniformtext_minsize=12,
                 uniformtext_mode="show",
             )
