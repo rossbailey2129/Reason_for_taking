@@ -32,6 +32,8 @@ NUMERIC_METRICS = [
 
 BAR_FILL = "#e6f1fc"
 CHART_TEXT = "#36485c"
+# Figure spaces: with insidetextanchor="end", trailing padding pushes digits left of the bar tip
+_BAR_LABEL_END_PAD = "\u2007" * 6
 # Plotly + browser; load Besley via _inject_app_font() for Streamlit UI
 FONT_FAMILY = "Besley, Georgia, serif"
 
@@ -85,10 +87,16 @@ def _bar_data_labels(values: pd.Series, metric_col: str) -> list[str]:
     for v in values:
         f = float(v)
         if "SHARE" in metric_col:
-            labels.append(f"{f:.3f}")
+            labels.append(f"{f:.3f}{_BAR_LABEL_END_PAD}")
         else:
-            labels.append(f"{int(round(f)):,}")
+            labels.append(f"{int(round(f)):,}{_BAR_LABEL_END_PAD}")
     return labels
+
+
+def _bar_label_font_size(num_bars: int) -> int:
+    """Keep labels readable when many bars; taper slightly for very dense charts."""
+    n = max(1, min(int(num_bars), 100))
+    return int(max(13, min(18, 21.0 - n * 0.07)))
 
 
 def _padded_range(
@@ -516,6 +524,8 @@ def main() -> None:
                 color_discrete_sequence=[BAR_FILL],
             )
             bar_lbl = _bar_data_labels(sub[rank_metric], rank_metric)
+            n_bars = len(sub)
+            lbl_px = _bar_label_font_size(n_bars)
             fig.update_traces(
                 marker=dict(
                     color=BAR_FILL,
@@ -525,14 +535,17 @@ def main() -> None:
                 textposition="inside",
                 insidetextanchor="end",
                 textangle=0,
-                textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=12),
+                constraintext="none",
+                textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px),
             )
             fig.update_layout(
                 font=_plot_base_font(),
                 hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                 yaxis={"categoryorder": "total ascending"},
-                height=max(400, 24 * len(sub)),
+                height=max(400, 24 * n_bars),
                 margin=dict(l=200),
+                uniformtext_minsize=12,
+                uniformtext_mode="show",
             )
             fig.update_xaxes(
                 tickfont=_tick_font(),
@@ -574,6 +587,8 @@ def main() -> None:
                 color_discrete_sequence=[BAR_FILL],
             )
             bar_lbl_hi = _bar_data_labels(sub_hi[rank_metric_hi], rank_metric_hi)
+            n_bars_hi = len(sub_hi)
+            lbl_px_hi = _bar_label_font_size(n_bars_hi)
             fig2.update_traces(
                 marker=dict(
                     color=BAR_FILL,
@@ -583,14 +598,17 @@ def main() -> None:
                 textposition="inside",
                 insidetextanchor="end",
                 textangle=0,
-                textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=12),
+                constraintext="none",
+                textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px_hi),
             )
             fig2.update_layout(
                 font=_plot_base_font(),
                 hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                 yaxis={"categoryorder": "total ascending"},
-                height=max(400, 24 * len(sub_hi)),
+                height=max(400, 24 * n_bars_hi),
                 margin=dict(l=220),
+                uniformtext_minsize=12,
+                uniformtext_mode="show",
             )
             fig2.update_xaxes(
                 tickfont=_tick_font(),
