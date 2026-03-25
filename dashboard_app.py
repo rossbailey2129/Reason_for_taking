@@ -79,42 +79,16 @@ def _axis_title_font() -> dict:
     return {"font": {"family": FONT_FAMILY, "color": CHART_TEXT}}
 
 
-def _bar_labels_and_textposition(
-    values: pd.Series, metric_col: str, num_bars: int
-) -> tuple[list[str], list[str]]:
-    """
-    Bar value text plus per-bar textposition ('inside' | 'outside').
-    Uses heuristics for when an inside label would likely clip (short bar vs max,
-    many bars = thinner rows, long number string); outside labels skip figure-space pad.
-    """
-    vals_f = values.astype(float)
-    axis_max = float(vals_f.max()) if len(vals_f) else 1.0
-    if axis_max <= 0:
-        axis_max = 1.0
-
-    density = min(1.0, max(0.0, (num_bars - 18) / 72.0))
-
-    texts: list[str] = []
-    positions: list[str] = []
-
-    for f in vals_f:
-        f = float(f)
-        ratio = f / axis_max
+def _bar_data_labels(values: pd.Series, metric_col: str) -> list[str]:
+    """Formatted values for bar annotations (all labels use textposition='outside')."""
+    labels: list[str] = []
+    for v in values.astype(float):
+        f = float(v)
         if "SHARE" in metric_col:
-            body = f"{f:.3f}"
+            labels.append(f"{f:.3f}")
         else:
-            body = f"{int(round(f)):,}"
-
-        min_ratio_for_inside = 0.10 + 0.22 * density
-        len_bias = min(0.14, max(0.0, (len(body) - 3) * 0.035))
-        threshold = min_ratio_for_inside + len_bias
-
-        use_outside = ratio < threshold
-        pad = "" if use_outside else _bar_end_pad(f, axis_max)
-        texts.append(f"{body}{pad}")
-        positions.append("outside" if use_outside else "inside")
-
-    return texts, positions
+            labels.append(f"{int(round(f)):,}")
+    return labels
 
 
 def _bar_label_font_size(num_bars: int) -> int:
