@@ -32,10 +32,32 @@ NUMERIC_METRICS = [
 
 BAR_FILL = "#e6f1fc"
 CHART_TEXT = "#36485c"
-# Figure spaces: with insidetextanchor="end", trailing padding pushes digits left of the bar tip
-_BAR_LABEL_END_PAD = "\u0020" * 1
 # Plotly + browser; load Besley via _inject_app_font() for Streamlit UI
 FONT_FAMILY = "Besley, Georgia, serif"
+
+
+def _bar_end_pad(value: float, axis_max: float) -> str:
+    """
+    Figure spaces (U+2007) after the value; with insidetextanchor='end' they sit at the
+    bar tip and push digits left. Scale down pad for short bars so tiny bars are not
+    mostly padding.
+    """
+    if axis_max <= 0:
+        return ""
+    ratio = max(0.0, min(1.0, float(value) / float(axis_max)))
+    if ratio < 0.04:
+        n = 0
+    elif ratio < 0.12:
+        n = 1
+    elif ratio < 0.28:
+        n = 2
+    elif ratio < 0.5:
+        n = 3
+    elif ratio < 0.75:
+        n = 4
+    else:
+        n = 5
+    return "\u2007" * n
 
 
 def _inject_app_font() -> None:
@@ -83,13 +105,18 @@ def _axis_title_font() -> dict:
 
 def _bar_data_labels(values: pd.Series, metric_col: str) -> list[str]:
     """Format values shown at the inside end of horizontal bars."""
+    vals_f = values.astype(float)
+    axis_max = float(vals_f.max()) if len(vals_f) else 1.0
+    if axis_max <= 0:
+        axis_max = 1.0
     labels: list[str] = []
-    for v in values:
+    for v in vals_f:
         f = float(v)
+        pad = _bar_end_pad(f, axis_max)
         if "SHARE" in metric_col:
-            labels.append(f"{f:.3f}{_BAR_LABEL_END_PAD}")
+            labels.append(f"{f:.3f}{pad}")
         else:
-            labels.append(f"{int(round(f)):,}{_BAR_LABEL_END_PAD}")
+            labels.append(f"{int(round(f)):,}{pad}")
     return labels
 
 
