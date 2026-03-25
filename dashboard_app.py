@@ -44,8 +44,22 @@ def _inject_app_font() -> None:
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
         <link href="https://fonts.googleapis.com/css2?family=Besley:ital,wght@0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
         <style>
-            .stApp, .stApp * {
-                font-family: 'Besley', Georgia, serif !important;
+            /* Besley as default text. Do NOT use `.stApp * { ... !important }` — that
+               overrides Streamlit's Material Symbols font on expander/chevron icons and
+               shows raw names like "arrow_back_ios_new" on top of labels. */
+            html, body {
+                font-family: 'Besley', Georgia, serif;
+            }
+            .stApp {
+                font-family: 'Besley', Georgia, serif;
+            }
+            .stMarkdown, .stMarkdown p, .stMarkdown span,
+            [data-testid="stSidebar"] label,
+            [data-testid="stSidebar"] p,
+            [data-testid="stSidebar"] .stMarkdown,
+            [data-testid="stAppViewContainer"] .block-container,
+            h1, h2, h3, h4, h5, h6 {
+                font-family: 'Besley', Georgia, serif;
             }
         </style>
         """,
