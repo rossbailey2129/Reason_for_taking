@@ -522,21 +522,15 @@ def main() -> None:
                 color_discrete_sequence=[BAR_FILL],
             )
             n_bars = len(sub)
-            bar_lbl, bar_pos = _bar_labels_and_textposition(
-                sub[rank_metric], rank_metric, n_bars
-            )
+            bar_lbl = _bar_data_labels(sub[rank_metric], rank_metric)
             lbl_px = _bar_label_font_size(n_bars)
-            any_outside = any(p == "outside" for p in bar_pos)
             fig.update_traces(
                 marker=dict(
                     color=BAR_FILL,
                     line=dict(width=0.5, color=CHART_TEXT),
                 ),
                 text=bar_lbl,
-                textposition=bar_pos,
-                insidetextanchor="end",
-                textangle=0,
-                constraintext="none",
+                textposition="outside",
                 cliponaxis=False,
                 textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px),
                 outsidetextfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px),
@@ -546,9 +540,7 @@ def main() -> None:
                 hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                 yaxis={"categoryorder": "total ascending"},
                 height=max(400, 24 * n_bars),
-                margin=dict(l=200, r=140 if any_outside else 48),
-                uniformtext_minsize=12,
-                uniformtext_mode="show",
+                margin=dict(l=200, r=120),
             )
             fig.update_xaxes(
                 tickfont=_tick_font(),
@@ -590,21 +582,15 @@ def main() -> None:
                 color_discrete_sequence=[BAR_FILL],
             )
             n_bars_hi = len(sub_hi)
-            bar_lbl_hi, bar_pos_hi = _bar_labels_and_textposition(
-                sub_hi[rank_metric_hi], rank_metric_hi, n_bars_hi
-            )
+            bar_lbl_hi = _bar_data_labels(sub_hi[rank_metric_hi], rank_metric_hi)
             lbl_px_hi = _bar_label_font_size(n_bars_hi)
-            any_out_hi = any(p == "outside" for p in bar_pos_hi)
             fig2.update_traces(
                 marker=dict(
                     color=BAR_FILL,
                     line=dict(width=0.5, color=CHART_TEXT),
                 ),
                 text=bar_lbl_hi,
-                textposition=bar_pos_hi,
-                insidetextanchor="end",
-                textangle=0,
-                constraintext="none",
+                textposition="outside",
                 cliponaxis=False,
                 textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px_hi),
                 outsidetextfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px_hi),
@@ -614,9 +600,7 @@ def main() -> None:
                 hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                 yaxis={"categoryorder": "total ascending"},
                 height=max(400, 24 * n_bars_hi),
-                margin=dict(l=220, r=140 if any_out_hi else 48),
-                uniformtext_minsize=12,
-                uniformtext_mode="show",
+                margin=dict(l=220, r=120),
             )
             fig2.update_xaxes(
                 tickfont=_tick_font(),
