@@ -510,7 +510,7 @@ def main() -> None:
                 text=bar_lbl,
                 textposition="inside",
                 insidetextanchor="end",
-                textangle=-90,
+                textangle=90,
                 textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=12),
             )
             fig.update_layout(
@@ -568,7 +568,7 @@ def main() -> None:
                 text=bar_lbl_hi,
                 textposition="inside",
                 insidetextanchor="end",
-                textangle=-90,
+                textangle=90,
                 textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=12),
             )
             fig2.update_layout(
