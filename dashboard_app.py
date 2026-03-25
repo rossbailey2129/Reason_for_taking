@@ -97,6 +97,45 @@ def _bar_label_font_size(num_bars: int) -> int:
     return int(max(13, min(14, 26.0 - n * 0.07)))
 
 
+def _weighted_mean(g: pd.DataFrame, col: str) -> float:
+    w = float(g["REC_COUNT"].sum())
+    if w <= 0:
+        return float("nan")
+    return float((g[col].astype(float) * g["REC_COUNT"].astype(float)).sum() / w)
+
+
+def _aggregate_for_bar_chart(
+    df: pd.DataFrame, group_col: str, rank_metric: str
+) -> pd.DataFrame:
+    """
+    One row per group_col value: summed REC_COUNT and REC_COUNT-weighted means for
+    share columns (for ranking / hover after filtering by taxonomy or interest).
+    """
+    if df.empty:
+        return pd.DataFrame()
+    rows: list[dict] = []
+    for name, g in df.groupby(group_col, sort=False):
+        rec = int(g["REC_COUNT"].sum())
+        sm_lt = _weighted_mean(g, "SHARE_WITHIN_LOWEST_TAXONOMY")
+        sm_hi = _weighted_mean(g, "SHARE_WITHIN_HEALTH_INTEREST")
+        if rank_metric == "REC_COUNT":
+            rank_val = float(rec)
+        elif rank_metric == "SHARE_WITHIN_LOWEST_TAXONOMY":
+            rank_val = sm_lt
+        else:
+            rank_val = sm_hi
+        rows.append(
+            {
+                group_col: name,
+                rank_metric: rank_val,
+                "REC_COUNT": rec,
+                "SHARE_WITHIN_LOWEST_TAXONOMY": sm_lt,
+                "SHARE_WITHIN_HEALTH_INTEREST": sm_hi,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _padded_range(
     lo: float,
     hi: float,
@@ -494,123 +533,153 @@ def main() -> None:
 
     with tab_leaf:
         st.subheader("Which health interests associate most with a lowest taxonomy?")
+        st.caption(
+            "Uses sidebar-filtered data. Leave **Lowest taxonomies** empty to rank "
+            "interests across **all** rows; choose one or more taxonomies to narrow."
+        )
         rank_metric = st.radio(
             "Rank bars by",
             NUMERIC_METRICS,
             horizontal=True,
             key="metric_leaf_tab",
         )
-        pick_leaf = st.selectbox(
-            "Lowest taxonomy",
-            options=all_leaf,
-            key="pick_leaf",
+        leaf_opts = sorted_unique(filtered[LEAF_COL]) if len(filtered) else []
+        sel_leaves_tab = st.multiselect(
+            "Lowest taxonomies (empty = all)",
+            options=leaf_opts,
+            default=[],
+            key="tab_pick_leaves",
         )
         top_n = st.number_input("Top N interests", 5, 100, 20, key="topn_leaf")
-        sub = filtered[filtered[LEAF_COL] == pick_leaf].nlargest(
-            int(top_n), rank_metric
+        base_leaf = (
+            filtered
+            if not sel_leaves_tab
+            else filtered[filtered[LEAF_COL].isin(sel_leaves_tab)]
         )
-        if sub.empty:
-            st.info("No rows for this lowest taxonomy under current filters.")
+        if base_leaf.empty:
+            st.info("No rows match the current sidebar and tab filters.")
         else:
-            fig = px.bar(
-                sub,
-                x=rank_metric,
-                y=HEALTH_COL,
-                orientation="h",
-                hover_data=[*NUMERIC_METRICS, *hover_extra],
-                labels={rank_metric: rank_metric.replace("_", " ")},
-                color_discrete_sequence=[BAR_FILL],
-            )
-            n_bars = len(sub)
-            bar_lbl = _bar_data_labels(sub[rank_metric], rank_metric)
-            lbl_px = _bar_label_font_size(n_bars)
-            fig.update_traces(
-                marker=dict(
-                    color=BAR_FILL,
-                    line=dict(width=0.5, color=CHART_TEXT),
-                ),
-                text=bar_lbl,
-                textposition="outside",
-                cliponaxis=False,
-                textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px),
-                outsidetextfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px),
-            )
-            fig.update_layout(
-                font=_plot_base_font(),
-                hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
-                yaxis={"categoryorder": "total ascending"},
-                height=max(400, 24 * n_bars),
-                margin=dict(l=200, r=120),
-            )
-            fig.update_xaxes(
-                tickfont=_tick_font(),
-                title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
-            )
-            fig.update_yaxes(
-                tickfont=_tick_font(),
-                title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            agg_leaf = _aggregate_for_bar_chart(base_leaf, HEALTH_COL, rank_metric)
+            sub = agg_leaf.nlargest(int(top_n), rank_metric)
+            if sub.empty:
+                st.info("Nothing to plot for this selection.")
+            else:
+                fig = px.bar(
+                    sub,
+                    x=rank_metric,
+                    y=HEALTH_COL,
+                    orientation="h",
+                    hover_data=[c for c in NUMERIC_METRICS if c in sub.columns],
+                    labels={rank_metric: rank_metric.replace("_", " ")},
+                    color_discrete_sequence=[BAR_FILL],
+                )
+                n_bars = len(sub)
+                bar_lbl = _bar_data_labels(sub[rank_metric], rank_metric)
+                lbl_px = _bar_label_font_size(n_bars)
+                fig.update_traces(
+                    marker=dict(
+                        color=BAR_FILL,
+                        line=dict(width=0.5, color=CHART_TEXT),
+                    ),
+                    text=bar_lbl,
+                    textposition="outside",
+                    cliponaxis=False,
+                    textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px),
+                    outsidetextfont=dict(
+                        family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px
+                    ),
+                )
+                fig.update_layout(
+                    font=_plot_base_font(),
+                    hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
+                    yaxis={"categoryorder": "total ascending"},
+                    height=max(400, 24 * n_bars),
+                    margin=dict(l=200, r=120),
+                )
+                fig.update_xaxes(
+                    tickfont=_tick_font(),
+                    title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+                )
+                fig.update_yaxes(
+                    tickfont=_tick_font(),
+                    title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
     with tab_hi:
         st.subheader("Which lowest taxonomies associate most with a health interest?")
+        st.caption(
+            "Uses sidebar-filtered data. Leave **Health interests** empty to rank "
+            "lowest taxonomies across **all** rows; choose one or more interests to narrow."
+        )
         rank_metric_hi = st.radio(
             "Rank bars by",
             NUMERIC_METRICS,
             horizontal=True,
             key="metric_hi_tab",
         )
-        pick_hi = st.selectbox(
-            "Health interest",
-            options=all_interests,
-            key="pick_interest",
+        hi_opts = sorted_unique(filtered[HEALTH_COL]) if len(filtered) else []
+        sel_interests_tab = st.multiselect(
+            "Health interests (empty = all)",
+            options=hi_opts,
+            default=[],
+            key="tab_pick_interests",
         )
         top_n_hi = st.number_input("Top N lowest taxonomies", 5, 100, 20, key="topn_hi")
-        sub_hi = filtered[filtered[HEALTH_COL] == pick_hi].nlargest(
-            int(top_n_hi), rank_metric_hi
+        base_hi = (
+            filtered
+            if not sel_interests_tab
+            else filtered[filtered[HEALTH_COL].isin(sel_interests_tab)]
         )
-        if sub_hi.empty:
-            st.info("No rows for this interest under current filters.")
+        if base_hi.empty:
+            st.info("No rows match the current sidebar and tab filters.")
         else:
-            fig2 = px.bar(
-                sub_hi,
-                x=rank_metric_hi,
-                y=LEAF_COL,
-                orientation="h",
-                hover_data=[*NUMERIC_METRICS, *hover_extra],
-                labels={rank_metric_hi: rank_metric_hi.replace("_", " ")},
-                color_discrete_sequence=[BAR_FILL],
-            )
-            n_bars_hi = len(sub_hi)
-            bar_lbl_hi = _bar_data_labels(sub_hi[rank_metric_hi], rank_metric_hi)
-            lbl_px_hi = _bar_label_font_size(n_bars_hi)
-            fig2.update_traces(
-                marker=dict(
-                    color=BAR_FILL,
-                    line=dict(width=0.5, color=CHART_TEXT),
-                ),
-                text=bar_lbl_hi,
-                textposition="outside",
-                cliponaxis=False,
-                textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px_hi),
-                outsidetextfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px_hi),
-            )
-            fig2.update_layout(
-                font=_plot_base_font(),
-                hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
-                yaxis={"categoryorder": "total ascending"},
-                height=max(400, 24 * n_bars_hi),
-                margin=dict(l=220, r=120),
-            )
-            fig2.update_xaxes(
-                tickfont=_tick_font(),
-                title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
-            )
-            fig2.update_yaxes(
-                tickfont=_tick_font(),
-                title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
-            )
-            st.plotly_chart(fig2, use_container_width=True)
+            agg_hi = _aggregate_for_bar_chart(base_hi, LEAF_COL, rank_metric_hi)
+            sub_hi = agg_hi.nlargest(int(top_n_hi), rank_metric_hi)
+            if sub_hi.empty:
+                st.info("Nothing to plot for this selection.")
+            else:
+                fig2 = px.bar(
+                    sub_hi,
+                    x=rank_metric_hi,
+                    y=LEAF_COL,
+                    orientation="h",
+                    hover_data=[c for c in NUMERIC_METRICS if c in sub_hi.columns],
+                    labels={rank_metric_hi: rank_metric_hi.replace("_", " ")},
+                    color_discrete_sequence=[BAR_FILL],
+                )
+                n_bars_hi = len(sub_hi)
+                bar_lbl_hi = _bar_data_labels(sub_hi[rank_metric_hi], rank_metric_hi)
+                lbl_px_hi = _bar_label_font_size(n_bars_hi)
+                fig2.update_traces(
+                    marker=dict(
+                        color=BAR_FILL,
+                        line=dict(width=0.5, color=CHART_TEXT),
+                    ),
+                    text=bar_lbl_hi,
+                    textposition="outside",
+                    cliponaxis=False,
+                    textfont=dict(family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px_hi),
+                    outsidetextfont=dict(
+                        family=FONT_FAMILY, color=CHART_TEXT, size=lbl_px_hi
+                    ),
+                )
+                fig2.update_layout(
+                    font=_plot_base_font(),
+                    hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
+                    yaxis={"categoryorder": "total ascending"},
+                    height=max(400, 24 * n_bars_hi),
+                    margin=dict(l=220, r=120),
+                )
+                fig2.update_xaxes(
+                    tickfont=_tick_font(),
+                    title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+                )
+                fig2.update_yaxes(
+                    tickfont=_tick_font(),
+                    title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+                )
+                st.plotly_chart(fig2, use_container_width=True)
 
     with tab_matrix:
         st.subheader("Heatmap of top lowest taxonomies × top interests (after filters)")
