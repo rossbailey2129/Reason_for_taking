@@ -38,6 +38,17 @@ def _max_label_len(labels: Sequence[object]) -> int:
     return max(len(str(x)) for x in labels)
 
 
+def _left_margin_for_categories(labels: Sequence[str], font_size: int) -> int:
+    """
+    Reserve horizontal space for y-axis category labels so automargin does not
+    swallow the entire plot width (which makes bars look 'gone').
+    """
+    ml = _max_label_len(labels)
+    char_px = max(5.2, font_size * 0.58)
+    est = int(40 + min(ml, 90) * char_px)
+    return max(120, min(560, est))
+
+
 def _hbar_fig_height(
     num_bars: int,
     category_labels: Sequence[str],
@@ -67,6 +78,14 @@ def _heatmap_fig_height(
     ml = _max_label_len(row_labels)
     per_row = max(22, min(56, 18 + ml // 4))
     return max(min_h, min(max_h, chrome + num_rows * per_row))
+
+
+def _heatmap_left_margin(row_labels: Sequence[str], font_size: int) -> int:
+    """Room for heatmap y-axis labels without collapsing the color grid."""
+    ml = _max_label_len(row_labels)
+    char_px = max(5.0, font_size * 0.55)
+    est = int(48 + min(ml, 90) * char_px)
+    return max(100, min(520, est))
 
 
 def _heatmap_bottom_margin(
@@ -583,14 +602,21 @@ def main() -> None:
             )
             xr = sub_disp[rank_metric].astype(float)
             x0, x1 = _hbar_xaxis_range(xr, rank_metric)
+            y_margin = _left_margin_for_categories(y_labels, tfs)
             fig.update_layout(
                 yaxis={
-                    "categoryorder": "total ascending",
-                    **_categorical_axis_show_all(tick_font_size=tfs),
+                    "type": "category",
+                    "categoryorder": "array",
+                    "categoryarray": y_labels,
+                    **_categorical_axis_show_all(
+                        tick_font_size=tfs,
+                        automargin=False,
+                        tickson_labels=False,
+                    ),
                 },
-                xaxis={"range": [x0, x1], "automargin": True},
+                xaxis={"range": [x0, x1], "automargin": False},
                 height=_hbar_fig_height(len(sub_disp), y_labels),
-                margin=dict(l=16, r=24, t=48, b=48),
+                margin=dict(l=y_margin, r=28, t=52, b=52),
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -627,14 +653,21 @@ def main() -> None:
             )
             xr2 = sub_hi_disp[rank_metric_hi].astype(float)
             x0b, x1b = _hbar_xaxis_range(xr2, rank_metric_hi)
+            y_margin_hi = _left_margin_for_categories(y_labels_hi, tfs_hi)
             fig2.update_layout(
                 yaxis={
-                    "categoryorder": "total ascending",
-                    **_categorical_axis_show_all(tick_font_size=tfs_hi),
+                    "type": "category",
+                    "categoryorder": "array",
+                    "categoryarray": y_labels_hi,
+                    **_categorical_axis_show_all(
+                        tick_font_size=tfs_hi,
+                        automargin=False,
+                        tickson_labels=False,
+                    ),
                 },
-                xaxis={"range": [x0b, x1b], "automargin": True},
+                xaxis={"range": [x0b, x1b], "automargin": False},
                 height=_hbar_fig_height(len(sub_hi_disp), y_labels_hi),
-                margin=dict(l=16, r=24, t=48, b=48),
+                margin=dict(l=y_margin_hi, r=28, t=52, b=52),
             )
             st.plotly_chart(fig2, use_container_width=True)
 
@@ -695,26 +728,35 @@ def main() -> None:
             mx_len_x = _max_label_len(col_ix)
             xfs = 9 if n_cols > 40 else 10
             yfs = 9 if n_rows > 40 else 10
+            hm_left = _heatmap_left_margin(row_ix, yfs)
             fig_hm.update_layout(
                 xaxis=dict(
                     side="bottom",
+                    type="category",
+                    categoryorder="array",
+                    categoryarray=col_ix,
                     **_categorical_axis_show_all(
-                        automargin=True,
+                        automargin=False,
                         tickangle=-50,
                         tick_font_size=xfs,
                         tickson_labels=False,
                     ),
                 ),
-                yaxis=_categorical_axis_show_all(
-                    automargin=True,
-                    tick_font_size=yfs,
-                    tickson_labels=False,
+                yaxis=dict(
+                    type="category",
+                    categoryorder="array",
+                    categoryarray=row_ix,
+                    **_categorical_axis_show_all(
+                        automargin=False,
+                        tick_font_size=yfs,
+                        tickson_labels=False,
+                    ),
                 ),
                 height=_heatmap_fig_height(n_rows, row_ix),
                 margin=dict(
-                    l=16,
-                    r=24,
-                    t=48,
+                    l=hm_left,
+                    r=80,
+                    t=52,
                     b=_heatmap_bottom_margin(n_cols, mx_len_x),
                 ),
             )
@@ -770,9 +812,9 @@ def main() -> None:
             scatter_h = max(360, min(900, 320 + int(len(sample) ** 0.45) * 8))
             fig_s.update_layout(
                 height=int(scatter_h),
-                xaxis=dict(range=[sx0, sx1], automargin=True),
-                yaxis=dict(range=[sy0, sy1], automargin=True),
-                margin=dict(l=16, r=16, t=48, b=48),
+                xaxis=dict(range=[sx0, sx1], automargin=False),
+                yaxis=dict(range=[sy0, sy1], automargin=False),
+                margin=dict(l=56, r=28, t=52, b=52),
             )
             st.plotly_chart(fig_s, use_container_width=True)
 
