@@ -94,7 +94,7 @@ def _bar_data_labels(values: pd.Series, metric_col: str) -> list[str]:
 def _bar_label_font_size(num_bars: int) -> int:
     """Keep labels readable when many bars; taper slightly for very dense charts."""
     n = max(1, min(int(num_bars), 100))
-    return int(max(13, min(24, 14.0 - n * 0.07)))
+    return int(max(13, min(14, 26.0 - n * 0.07)))
 
 
 def _padded_range(
