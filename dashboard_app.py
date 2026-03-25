@@ -30,6 +30,21 @@ NUMERIC_METRICS = [
     "SHARE_WITHIN_HEALTH_INTEREST",
 ]
 
+BAR_FILL = "#e6f1fc"
+CHART_TEXT = "#36485c"
+
+
+def _bar_data_labels(values: pd.Series, metric_col: str) -> list[str]:
+    """Format values shown at the inside end of horizontal bars."""
+    labels: list[str] = []
+    for v in values:
+        f = float(v)
+        if "SHARE" in metric_col:
+            labels.append(f"{f:.3f}")
+        else:
+            labels.append(f"{int(round(f)):,}")
+    return labels
+
 
 def _padded_range(
     lo: float,
@@ -452,9 +467,30 @@ def main() -> None:
                 orientation="h",
                 hover_data=[*NUMERIC_METRICS, *hover_extra],
                 labels={rank_metric: rank_metric.replace("_", " ")},
+                color_discrete_sequence=[BAR_FILL],
+            )
+            bar_lbl = _bar_data_labels(sub[rank_metric], rank_metric)
+            fig.update_traces(
+                marker=dict(
+                    color=BAR_FILL,
+                    line=dict(width=0.5, color=CHART_TEXT),
+                ),
+                text=bar_lbl,
+                textposition="inside",
+                insidetextanchor="end",
+                textfont=dict(color=CHART_TEXT, size=12),
             )
             fig.update_layout(
-                yaxis={"categoryorder": "total ascending"},
+                font=dict(color=CHART_TEXT),
+                yaxis={
+                    "categoryorder": "total ascending",
+                    "tickfont": {"color": CHART_TEXT},
+                    "title": {"font": {"color": CHART_TEXT}},
+                },
+                xaxis={
+                    "tickfont": {"color": CHART_TEXT},
+                    "title": {"font": {"color": CHART_TEXT}},
+                },
                 height=max(400, 24 * len(sub)),
                 margin=dict(l=200),
             )
@@ -487,9 +523,30 @@ def main() -> None:
                 orientation="h",
                 hover_data=[*NUMERIC_METRICS, *hover_extra],
                 labels={rank_metric_hi: rank_metric_hi.replace("_", " ")},
+                color_discrete_sequence=[BAR_FILL],
+            )
+            bar_lbl_hi = _bar_data_labels(sub_hi[rank_metric_hi], rank_metric_hi)
+            fig2.update_traces(
+                marker=dict(
+                    color=BAR_FILL,
+                    line=dict(width=0.5, color=CHART_TEXT),
+                ),
+                text=bar_lbl_hi,
+                textposition="inside",
+                insidetextanchor="end",
+                textfont=dict(color=CHART_TEXT, size=12),
             )
             fig2.update_layout(
-                yaxis={"categoryorder": "total ascending"},
+                font=dict(color=CHART_TEXT),
+                yaxis={
+                    "categoryorder": "total ascending",
+                    "tickfont": {"color": CHART_TEXT},
+                    "title": {"font": {"color": CHART_TEXT}},
+                },
+                xaxis={
+                    "tickfont": {"color": CHART_TEXT},
+                    "title": {"font": {"color": CHART_TEXT}},
+                },
                 height=max(400, 24 * len(sub_hi)),
                 margin=dict(l=220),
             )
