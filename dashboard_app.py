@@ -113,6 +113,7 @@ def _padded_range(
     pad_frac: float = 0.06,
     floor: float | None = 0.0,
     ceiling: float | None = None,
+    min_span: float | None = None,
 ) -> tuple[float, float]:
     """Axis limits with padding; optional floor/ceiling (e.g. [0, 1] for shares)."""
     if lo > hi:
@@ -135,7 +136,55 @@ def _padded_range(
             a = max(floor, a)
         if ceiling is not None:
             b = min(ceiling, b)
+    if min_span is not None and b > a and (b - a) < min_span:
+        mid = 0.5 * (a + b)
+        half = 0.5 * min_span
+        na, nb = mid - half, mid + half
+        if floor is not None:
+            na = max(floor, na)
+        if ceiling is not None:
+            nb = min(ceiling, nb)
+        if nb > na:
+            a, b = na, nb
+        if (b - a) < min_span and floor == 0.0 and ceiling == 1.0:
+            a, b = 0.0, 1.0
+    if a >= b:
+        mid = (lo + hi) / 2 if lo <= hi else lo
+        span = max(abs(mid) * 0.05, 0.02)
+        a, b = mid - span, mid + span
+        if floor is not None:
+            a = max(floor, a)
+        if ceiling is not None:
+            b = min(ceiling, b)
     return a, b
+
+
+def _hbar_xaxis_range(series: pd.Series, rank_metric: str) -> tuple[float, float]:
+    """
+    Horizontal bars extend from x=0. The visible x range must include 0 and the
+    bar tips; zooming to [xmin, xmax] clips the bars off-screen.
+    """
+    s = series.astype(float)
+    xmax = float(s.max())
+    if pd.isna(xmax):
+        xmax = 0.0
+    xmax = max(0.0, xmax)
+    lo = 0.0
+    if "SHARE" in rank_metric:
+        pad = max(0.015, xmax * 0.1)
+        hi = min(1.0, xmax + pad)
+        if hi <= lo:
+            hi = min(1.0, 0.05)
+        if hi - lo < 0.04:
+            hi = min(1.0, max(hi, 0.06))
+        return lo, hi
+    if xmax == 0.0:
+        return 0.0, 1.0
+    slack = max(1.0, xmax * 0.08)
+    hi = xmax + slack
+    if hi - lo < max(2.0, xmax * 0.12):
+        hi = lo + max(2.0, xmax * 0.12)
+    return lo, float(hi)
 
 
 def resolve_data_csv() -> Path:
@@ -533,10 +582,7 @@ def main() -> None:
                 labels={rank_metric: rank_metric.replace("_", " ")},
             )
             xr = sub_disp[rank_metric].astype(float)
-            x_cap = 1.0 if "SHARE" in rank_metric else None
-            x0, x1 = _padded_range(
-                float(xr.min()), float(xr.max()), floor=0.0, ceiling=x_cap
-            )
+            x0, x1 = _hbar_xaxis_range(xr, rank_metric)
             fig.update_layout(
                 yaxis={
                     "categoryorder": "total ascending",
@@ -580,10 +626,7 @@ def main() -> None:
                 labels={rank_metric_hi: rank_metric_hi.replace("_", " ")},
             )
             xr2 = sub_hi_disp[rank_metric_hi].astype(float)
-            x_cap2 = 1.0 if "SHARE" in rank_metric_hi else None
-            x0b, x1b = _padded_range(
-                float(xr2.min()), float(xr2.max()), floor=0.0, ceiling=x_cap2
-            )
+            x0b, x1b = _hbar_xaxis_range(xr2, rank_metric_hi)
             fig2.update_layout(
                 yaxis={
                     "categoryorder": "total ascending",
@@ -702,14 +745,27 @@ def main() -> None:
                 hover_data=hover_map,
                 opacity=0.65,
             )
-            fig_s.update_traces(marker=dict(line=dict(width=0.5, color="DarkSlateGrey")))
+            fig_s.update_traces(
+                marker=dict(
+                    sizemin=6,
+                    line=dict(width=0.5, color="DarkSlateGrey"),
+                )
+            )
             xs = sample["SHARE_WITHIN_LOWEST_TAXONOMY"].astype(float)
             ys = sample["SHARE_WITHIN_HEALTH_INTEREST"].astype(float)
             sx0, sx1 = _padded_range(
-                float(xs.min()), float(xs.max()), floor=0.0, ceiling=1.0
+                float(xs.min()),
+                float(xs.max()),
+                floor=0.0,
+                ceiling=1.0,
+                min_span=0.03,
             )
             sy0, sy1 = _padded_range(
-                float(ys.min()), float(ys.max()), floor=0.0, ceiling=1.0
+                float(ys.min()),
+                float(ys.max()),
+                floor=0.0,
+                ceiling=1.0,
+                min_span=0.03,
             )
             scatter_h = max(360, min(900, 320 + int(len(sample) ** 0.45) * 8))
             fig_s.update_layout(
