@@ -33,7 +33,7 @@ NUMERIC_METRICS = [
 BAR_FILL = "#e6f1fc"
 CHART_TEXT = "#36485c"
 # Figure spaces: with insidetextanchor="end", trailing padding pushes digits left of the bar tip
-_BAR_LABEL_END_PAD = "\u1007" * 1
+_BAR_LABEL_END_PAD = "\u4007" * 1
 # Plotly + browser; load Besley via _inject_app_font() for Streamlit UI
 FONT_FAMILY = "Besley, Georgia, serif"
 
