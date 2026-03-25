@@ -16,6 +16,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 LEAF_COL = "LOWEST_TAXONOMY"
 HEALTH_COL = "HEALTH_INTEREST"
+HEALTH_AREA_COL = "HEALTH_AREA"
 TAXONOMY_FILTER_COLS = [
     "CATEGORY_NAME",
     "SUB_CATEGORY_NAME",
@@ -44,7 +45,7 @@ def load_data(path_str: str) -> pd.DataFrame:
         raise FileNotFoundError(f"Expected CSV at {path}")
     df = pd.read_csv(path)
     df.columns = [c.strip() for c in df.columns]
-    required = {*TAXONOMY_FILTER_COLS, HEALTH_COL, *NUMERIC_METRICS}
+    required = {*TAXONOMY_FILTER_COLS, HEALTH_COL, HEALTH_AREA_COL, *NUMERIC_METRICS}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"CSV missing columns: {sorted(missing)}")
@@ -53,6 +54,7 @@ def load_data(path_str: str) -> pd.DataFrame:
     for col in TAXONOMY_FILTER_COLS:
         df[col] = df[col].fillna("").astype(str)
     df[HEALTH_COL] = df[HEALTH_COL].fillna("").astype(str)
+    df[HEALTH_AREA_COL] = df[HEALTH_AREA_COL].fillna("").astype(str)
     df = df.dropna(subset=[LEAF_COL, HEALTH_COL, "REC_COUNT"]).copy()
     return df
 
@@ -64,6 +66,7 @@ def sorted_unique(series: pd.Series) -> list[str]:
 def apply_filters(
     df: pd.DataFrame,
     taxonomy_selections: dict[str, list[str]],
+    health_areas: list[str],
     interests: list[str],
     rec_lo: int,
     rec_hi: int,
@@ -76,6 +79,8 @@ def apply_filters(
     for col, selected in taxonomy_selections.items():
         if selected:
             out = out[out[col].isin(selected)]
+    if health_areas:
+        out = out[out[HEALTH_AREA_COL].isin(health_areas)]
     if interests:
         out = out[out[HEALTH_COL].isin(interests)]
     rc = out["REC_COUNT"]
@@ -109,6 +114,7 @@ def main() -> None:
 
     all_leaf = sorted_unique(df[LEAF_COL])
     all_interests = sorted_unique(df[HEALTH_COL])
+    all_health_areas = sorted_unique(df[HEALTH_AREA_COL])
 
     rmin, rmax = int(df["REC_COUNT"].min()), int(df["REC_COUNT"].max())
     smin_lt = float(df["SHARE_WITHIN_LOWEST_TAXONOMY"].min())
@@ -209,6 +215,14 @@ def main() -> None:
                     default=[],
                     key=key,
                 )
+
+        sel_health_areas = st.multiselect(
+            "Health areas (empty = all)",
+            options=all_health_areas if all_health_areas else [""],
+            default=[],
+            key="health_area_ms",
+        )
+        reset_keys.append("health_area_ms")
 
         sel_interests = st.multiselect(
             "Health interests (empty = all)",
@@ -327,6 +341,7 @@ def main() -> None:
     filtered = apply_filters(
         df,
         taxonomy_selections,
+        sel_health_areas,
         sel_interests,
         rec_range[0],
         rec_range[1],
@@ -344,6 +359,7 @@ def main() -> None:
             "SUB_CATEGORY_NAME",
             "ATTRIBUTE_NAME",
             "SUB_ATTRIBUTE_NAME",
+            HEALTH_AREA_COL,
         )
         if c in df.columns
     ]
