@@ -5,6 +5,7 @@ Run: streamlit run dashboard_app.py
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 import pandas as pd
@@ -29,6 +30,112 @@ NUMERIC_METRICS = [
     "SHARE_WITHIN_LOWEST_TAXONOMY",
     "SHARE_WITHIN_HEALTH_INTEREST",
 ]
+
+
+def _max_label_len(labels: Sequence[object]) -> int:
+    if not labels:
+        return 0
+    return max(len(str(x)) for x in labels)
+
+
+def _hbar_fig_height(
+    num_bars: int,
+    category_labels: Sequence[str],
+    *,
+    min_h: int = 200,
+    max_h: int = 2800,
+) -> int:
+    """Scale vertical size to bar count and longest category label (room for every tick)."""
+    if num_bars < 1:
+        return min_h
+    chrome = 108
+    ml = _max_label_len(category_labels)
+    per_bar = max(24, min(56, 22 + ml // 3))
+    return max(min_h, min(max_h, chrome + num_bars * per_bar))
+
+
+def _heatmap_fig_height(
+    num_rows: int,
+    row_labels: Sequence[str],
+    *,
+    min_h: int = 240,
+    max_h: int = 4000,
+) -> int:
+    if num_rows < 1:
+        return min_h
+    chrome = 128
+    ml = _max_label_len(row_labels)
+    per_row = max(22, min(56, 18 + ml // 4))
+    return max(min_h, min(max_h, chrome + num_rows * per_row))
+
+
+def _heatmap_bottom_margin(
+    num_cols: int,
+    max_x_label_len: int,
+    *,
+    min_b: int = 100,
+    max_b: int = 640,
+) -> int:
+    """Bottom margin for angled x labels when every column tick is shown."""
+    if num_cols < 1:
+        return min_b
+    col_w = min(num_cols, 100) * 8
+    angled = int(min(180, 40 + max_x_label_len * 4.5))
+    return max(min_b, min(max_b, 72 + col_w + angled))
+
+
+def _categorical_axis_show_all(
+    *,
+    automargin: bool = True,
+    tickangle: float | None = None,
+    tick_font_size: int | None = None,
+    tickson_labels: bool = True,
+) -> dict:
+    """Plotly often hides categorical ticks when dense; force every label."""
+    d: dict = {
+        "ticklabelstep": 1,
+        "showticklabels": True,
+        "automargin": automargin,
+    }
+    if tickson_labels:
+        d["tickson"] = "labels"
+    if tickangle is not None:
+        d["tickangle"] = tickangle
+    if tick_font_size is not None:
+        d["tickfont"] = dict(size=tick_font_size)
+    return d
+
+
+def _padded_range(
+    lo: float,
+    hi: float,
+    *,
+    pad_frac: float = 0.06,
+    floor: float | None = 0.0,
+    ceiling: float | None = None,
+) -> tuple[float, float]:
+    """Axis limits with padding; optional floor/ceiling (e.g. [0, 1] for shares)."""
+    if lo > hi:
+        lo, hi = hi, lo
+    if lo == hi:
+        span = max(abs(lo) * 0.08, 1e-6) if lo != 0 else 0.02
+        a, b = lo - span, hi + span
+    else:
+        pad = (hi - lo) * pad_frac
+        a, b = lo - pad, hi + pad
+    if floor is not None:
+        a = max(floor, a)
+    if ceiling is not None:
+        b = min(ceiling, b)
+    if a >= b:
+        mid = (lo + hi) / 2 if lo <= hi else lo
+        span = max(abs(mid) * 0.05, 0.02)
+        a, b = mid - span, mid + span
+        if floor is not None:
+            a = max(floor, a)
+        if ceiling is not None:
+            b = min(ceiling, b)
+    return a, b
 
 
 def resolve_data_csv() -> Path:
@@ -379,11 +486,12 @@ def main() -> None:
         sort_opt = st.selectbox("Sort by", NUMERIC_METRICS)
         ascending = st.checkbox("Ascending", value=False)
         show = filtered.sort_values(sort_opt, ascending=ascending)
+        table_h = max(220, min(900, 72 + min(len(show), 40) * 28))
         st.dataframe(
             show,
             use_container_width=True,
             hide_index=True,
-            height=480,
+            height=int(table_h),
         )
         csv_bytes = show.to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -413,18 +521,30 @@ def main() -> None:
         if sub.empty:
             st.info("No rows for this lowest taxonomy under current filters.")
         else:
+            sub_disp = sub.sort_values(rank_metric, ascending=True)
+            y_labels = sub_disp[HEALTH_COL].astype(str).tolist()
+            tfs = 10 if len(sub_disp) > 35 else 11
             fig = px.bar(
-                sub,
+                sub_disp,
                 x=rank_metric,
                 y=HEALTH_COL,
                 orientation="h",
                 hover_data=[*NUMERIC_METRICS, *hover_extra],
                 labels={rank_metric: rank_metric.replace("_", " ")},
             )
+            xr = sub_disp[rank_metric].astype(float)
+            x_cap = 1.0 if "SHARE" in rank_metric else None
+            x0, x1 = _padded_range(
+                float(xr.min()), float(xr.max()), floor=0.0, ceiling=x_cap
+            )
             fig.update_layout(
-                yaxis={"categoryorder": "total ascending"},
-                height=max(400, 24 * len(sub)),
-                margin=dict(l=200),
+                yaxis={
+                    "categoryorder": "total ascending",
+                    **_categorical_axis_show_all(tick_font_size=tfs),
+                },
+                xaxis={"range": [x0, x1], "automargin": True},
+                height=_hbar_fig_height(len(sub_disp), y_labels),
+                margin=dict(l=16, r=24, t=48, b=48),
             )
             st.plotly_chart(fig, use_container_width=True)
 
@@ -448,18 +568,30 @@ def main() -> None:
         if sub_hi.empty:
             st.info("No rows for this interest under current filters.")
         else:
+            sub_hi_disp = sub_hi.sort_values(rank_metric_hi, ascending=True)
+            y_labels_hi = sub_hi_disp[LEAF_COL].astype(str).tolist()
+            tfs_hi = 10 if len(sub_hi_disp) > 35 else 11
             fig2 = px.bar(
-                sub_hi,
+                sub_hi_disp,
                 x=rank_metric_hi,
                 y=LEAF_COL,
                 orientation="h",
                 hover_data=[*NUMERIC_METRICS, *hover_extra],
                 labels={rank_metric_hi: rank_metric_hi.replace("_", " ")},
             )
+            xr2 = sub_hi_disp[rank_metric_hi].astype(float)
+            x_cap2 = 1.0 if "SHARE" in rank_metric_hi else None
+            x0b, x1b = _padded_range(
+                float(xr2.min()), float(xr2.max()), floor=0.0, ceiling=x_cap2
+            )
             fig2.update_layout(
-                yaxis={"categoryorder": "total ascending"},
-                height=max(400, 24 * len(sub_hi)),
-                margin=dict(l=220),
+                yaxis={
+                    "categoryorder": "total ascending",
+                    **_categorical_axis_show_all(tick_font_size=tfs_hi),
+                },
+                xaxis={"range": [x0b, x1b], "automargin": True},
+                height=_hbar_fig_height(len(sub_hi_disp), y_labels_hi),
+                margin=dict(l=16, r=24, t=48, b=48),
             )
             st.plotly_chart(fig2, use_container_width=True)
 
@@ -514,10 +646,34 @@ def main() -> None:
                     colorbar=dict(title=cell_metric.replace("_", " ")),
                 )
             )
+            n_rows, n_cols = len(pivot.index), len(pivot.columns)
+            row_ix = [str(i) for i in pivot.index.tolist()]
+            col_ix = [str(c) for c in pivot.columns.tolist()]
+            mx_len_x = _max_label_len(col_ix)
+            xfs = 9 if n_cols > 40 else 10
+            yfs = 9 if n_rows > 40 else 10
             fig_hm.update_layout(
-                xaxis=dict(side="bottom", tickangle=-45),
-                height=max(500, 14 * len(pivot.index)),
-                margin=dict(l=200, b=200),
+                xaxis=dict(
+                    side="bottom",
+                    **_categorical_axis_show_all(
+                        automargin=True,
+                        tickangle=-50,
+                        tick_font_size=xfs,
+                        tickson_labels=False,
+                    ),
+                ),
+                yaxis=_categorical_axis_show_all(
+                    automargin=True,
+                    tick_font_size=yfs,
+                    tickson_labels=False,
+                ),
+                height=_heatmap_fig_height(n_rows, row_ix),
+                margin=dict(
+                    l=16,
+                    r=24,
+                    t=48,
+                    b=_heatmap_bottom_margin(n_cols, mx_len_x),
+                ),
             )
             st.plotly_chart(fig_hm, use_container_width=True)
 
@@ -547,7 +703,21 @@ def main() -> None:
                 opacity=0.65,
             )
             fig_s.update_traces(marker=dict(line=dict(width=0.5, color="DarkSlateGrey")))
-            fig_s.update_layout(height=640)
+            xs = sample["SHARE_WITHIN_LOWEST_TAXONOMY"].astype(float)
+            ys = sample["SHARE_WITHIN_HEALTH_INTEREST"].astype(float)
+            sx0, sx1 = _padded_range(
+                float(xs.min()), float(xs.max()), floor=0.0, ceiling=1.0
+            )
+            sy0, sy1 = _padded_range(
+                float(ys.min()), float(ys.max()), floor=0.0, ceiling=1.0
+            )
+            scatter_h = max(360, min(900, 320 + int(len(sample) ** 0.45) * 8))
+            fig_s.update_layout(
+                height=int(scatter_h),
+                xaxis=dict(range=[sx0, sx1], automargin=True),
+                yaxis=dict(range=[sy0, sy1], automargin=True),
+                margin=dict(l=16, r=16, t=48, b=48),
+            )
             st.plotly_chart(fig_s, use_container_width=True)
 
 
