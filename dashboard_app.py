@@ -134,6 +134,20 @@ def _heatmap_label_font_size(n_rows: int, n_cols: int) -> int:
     return int(max(7, min(11, 18 - n**0.35)))
 
 
+def _heatmap_figure_height(n_rows: int) -> int:
+    """
+    Total figure height scales with the number of Y-axis categories so each row
+    stays tall enough for axis labels and in-cell annotations (not a fixed squat chart).
+    """
+    if n_rows <= 0:
+        return 420
+    # Margins already reserve space for long y-labels and tilted x-labels; this is
+    # incremental plot area per category row.
+    margin_stack = 320
+    per_row_px = 28
+    return int(min(8000, max(420, margin_stack + n_rows * per_row_px)))
+
+
 def _parse_plotly_color_to_rgb(color: str) -> tuple[float, float, float]:
     """Parse Plotly rgb()/rgba() or #RRGGBB into 0–255 components."""
     c = color.strip()
@@ -926,7 +940,7 @@ def main() -> None:
                     title=_axis_title_font(),
                 ),
                 yaxis=dict(tickfont=_tick_font(), title=_axis_title_font()),
-                height=max(500, 14 * n_rows),
+                height=_heatmap_figure_height(n_rows),
                 margin=dict(l=200, b=200),
             )
             st.plotly_chart(fig_hm, use_container_width=True)
