@@ -820,10 +820,10 @@ def main() -> None:
         col_a, col_b, col_c = st.columns(3)
         with col_a:
             k_leaf = st.number_input(
-                "Top lowest taxonomies (by total rec count)", 5, 80, 25
+                "Top lowest taxonomies (by total rec count)", 1, 80, 25
             )
         with col_b:
-            k_hi = st.number_input("Top health interests", 5, 80, 20)
+            k_hi = st.number_input("Top health interests", 1, 80, 20)
         with col_c:
             cell_metric = st.selectbox("Cell value", NUMERIC_METRICS)
         if filtered.empty:
