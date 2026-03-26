@@ -41,6 +41,8 @@ _SHARE_UI_VERSION = 2
 BAR_FILL = "#e6f1fc"
 CHART_TEXT = "#36485c"
 HEATMAP_COLORSCALE = "Blues"
+# Max height of the embedded heatmap viewport before vertical scrolling inside the widget.
+HEATMAP_EMBED_MAX_VIEWPORT_PX = 900
 # Plotly + browser; load Besley via _inject_app_font() for Streamlit UI
 FONT_FAMILY = "Besley, Georgia, serif"
 
@@ -152,7 +154,7 @@ def _heatmap_figure_height(n_rows: int) -> int:
 def _heatmap_figure_width(n_cols: int) -> int:
     """
     Total figure width scales with X-axis categories so columns stay wide enough
-    for tilted tick labels and in-cell text (used with use_container_width=False).
+    for tilted tick labels and in-cell text (embedded via _show_plotly_figure_scrollable).
     """
     if n_cols <= 0:
         return 720
@@ -167,11 +169,11 @@ def _heatmap_bottom_margin(n_cols: int) -> int:
     return int(min(320, max(180, 140 + n_cols * 4)))
 
 
-def _show_plotly_figure_horizontal_scroll(fig: go.Figure, *, iframe_pad: int = 40) -> None:
+def _show_plotly_figure_scrollable(fig: go.Figure, *, iframe_pad: int = 40) -> None:
     """
-    Embed Plotly in an iframe with an inner min-width so wide figures keep their
-    layout width and the user can scroll horizontally (st.plotly_chart often
-    squeezes charts into the column).
+    Embed Plotly in an iframe: inner min-width preserves horizontal layout; outer
+    max-height + overflow auto adds vertical (and horizontal) scrolling so large
+    heatmaps are not squished (st.plotly_chart does not do this reliably).
     """
     lw = fig.layout.width
     lh = fig.layout.height
@@ -182,14 +184,18 @@ def _show_plotly_figure_horizontal_scroll(fig: go.Figure, *, iframe_pad: int = 4
         full_html=False,
         config={"responsive": False, "displayModeBar": True},
     )
+    cap = HEATMAP_EMBED_MAX_VIEWPORT_PX
     html = (
-        '<div style="overflow-x:auto;overflow-y:hidden;width:100%;'
+        '<div style="'
+        f"max-height:min({cap}px,85vh);"
+        "overflow-x:auto;overflow-y:auto;width:100%;"
         '-webkit-overflow-scrolling:touch;">'
         f'<div style="min-width:{w}px;width:{w}px;max-width:none;">'
         f"{inner}"
         "</div></div>"
     )
-    components.html(html, height=h + iframe_pad, scrolling=True)
+    iframe_h = min(h + iframe_pad, cap) + 8
+    components.html(html, height=iframe_h, scrolling=True)
 
 
 def _parse_plotly_color_to_rgb(color: str) -> tuple[float, float, float]:
@@ -873,8 +879,8 @@ def main() -> None:
         st.subheader("Heatmap of top lowest taxonomies × top interests (after filters)")
         st.caption(
             "Only the busiest lowest taxonomies and interests in the filtered set "
-            "are shown. Wide heatmaps keep their pixel width—scroll horizontally "
-            "below if the chart extends past the page."
+            "are shown. Large heatmaps keep their pixel size—scroll horizontally "
+            "or vertically in the chart area when it exceeds the viewport."
         )
         col_a, col_b, col_c = st.columns(3)
         with col_a:
@@ -989,7 +995,7 @@ def main() -> None:
                 height=_heatmap_figure_height(n_rows),
                 margin=dict(l=200, b=_heatmap_bottom_margin(n_cols_hm)),
             )
-            _show_plotly_figure_horizontal_scroll(fig_hm)
+            _show_plotly_figure_scrollable(fig_hm)
 
     with tab_scatter:
         st.subheader("Share within lowest taxonomy vs within health interest")
