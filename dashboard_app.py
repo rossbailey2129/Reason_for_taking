@@ -41,8 +41,9 @@ _SHARE_UI_VERSION = 2
 BAR_FILL = "#e6f1fc"
 CHART_TEXT = "#36485c"
 HEATMAP_COLORSCALE = "Blues"
-# Max height of the embedded heatmap viewport before vertical scrolling inside the widget.
-HEATMAP_EMBED_MAX_VIEWPORT_PX = 900
+# Embedded heatmap viewport: larger values use more of the browser window before inner scroll.
+HEATMAP_EMBED_MAX_VIEWPORT_PX = 1320
+HEATMAP_EMBED_VIEWPORT_VH = 92
 # Plotly + browser; load Besley via _inject_app_font() for Streamlit UI
 FONT_FAMILY = "Besley, Georgia, serif"
 
@@ -63,6 +64,12 @@ def _inject_app_font() -> None:
             }
             .stApp {
                 font-family: 'Besley', Georgia, serif;
+            }
+            /* Let wide layout use more of the viewport (helps large heatmaps). */
+            .main .block-container {
+                max-width: min(1680px, 96vw);
+                padding-left: 2rem;
+                padding-right: 2rem;
             }
             .stMarkdown, .stMarkdown p, .stMarkdown span,
             [data-testid="stSidebar"] label,
@@ -146,9 +153,9 @@ def _heatmap_figure_height(n_rows: int) -> int:
         return 420
     # Margins already reserve space for long y-labels and tilted x-labels; this is
     # incremental plot area per category row.
-    margin_stack = 320
-    per_row_px = 28
-    return int(min(8000, max(420, margin_stack + n_rows * per_row_px)))
+    margin_stack = 340
+    per_row_px = 34
+    return int(min(8000, max(480, margin_stack + n_rows * per_row_px)))
 
 
 def _heatmap_figure_width(n_cols: int) -> int:
@@ -157,11 +164,11 @@ def _heatmap_figure_width(n_cols: int) -> int:
     for tilted tick labels and in-cell text (embedded via _show_plotly_figure_scrollable).
     """
     if n_cols <= 0:
-        return 720
+        return 840
     # Matches margin.l=200; colorbar + right padding ~160px inside the figure.
-    horizontal_margin = 360
-    per_col_px = 44
-    return int(min(6000, max(720, horizontal_margin + n_cols * per_col_px)))
+    horizontal_margin = 380
+    per_col_px = 54
+    return int(min(6000, max(840, horizontal_margin + n_cols * per_col_px)))
 
 
 def _heatmap_bottom_margin(n_cols: int) -> int:
@@ -184,17 +191,18 @@ def _show_plotly_figure_scrollable(fig: go.Figure, *, iframe_pad: int = 40) -> N
         full_html=False,
         config={"responsive": False, "displayModeBar": True},
     )
-    cap = HEATMAP_EMBED_MAX_VIEWPORT_PX
+    cap_px = HEATMAP_EMBED_MAX_VIEWPORT_PX
+    cap_vh = HEATMAP_EMBED_VIEWPORT_VH
     html = (
         '<div style="'
-        f"max-height:min({cap}px,85vh);"
+        f"max-height:min({cap_px}px,{cap_vh}vh);"
         "overflow-x:auto;overflow-y:auto;width:100%;"
         '-webkit-overflow-scrolling:touch;">'
         f'<div style="min-width:{w}px;width:{w}px;max-width:none;">'
         f"{inner}"
         "</div></div>"
     )
-    iframe_h = min(h + iframe_pad, cap) + 8
+    iframe_h = min(h + iframe_pad, cap_px) + 8
     components.html(html, height=iframe_h, scrolling=True)
 
 
