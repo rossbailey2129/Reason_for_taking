@@ -879,26 +879,45 @@ def main() -> None:
                 colorbar_cfg["showticksuffix"] = "all"
             else:
                 colorbar_cfg["tickformat"] = ",.0f"
+            x_hm = pivot.columns.tolist()
+            y_hm = pivot.index.tolist()
             fig_hm = go.Figure(
                 data=go.Heatmap(
                     z=z_hm,
-                    x=pivot.columns.tolist(),
-                    y=pivot.index.tolist(),
-                    text=hm_text,
-                    texttemplate="%{text}",
-                    textfont=dict(
-                        family=FONT_FAMILY,
-                        size=hm_lbl_px,
-                        color=hm_text_colors,
-                    ),
+                    x=x_hm,
+                    y=y_hm,
                     colorscale=HEATMAP_COLORSCALE,
                     hoverongaps=False,
                     hovertemplate=hm_hover,
                     colorbar=colorbar_cfg,
                 )
             )
+            hm_ann: list[dict] = []
+            for i, yi in enumerate(y_hm):
+                for j, xj in enumerate(x_hm):
+                    label = hm_text[i][j]
+                    if not label:
+                        continue
+                    hm_ann.append(
+                        {
+                            "xref": "x",
+                            "yref": "y",
+                            "x": xj,
+                            "y": yi,
+                            "text": label,
+                            "showarrow": False,
+                            "font": {
+                                "family": FONT_FAMILY,
+                                "size": hm_lbl_px,
+                                "color": hm_text_colors[i][j],
+                            },
+                            "xanchor": "center",
+                            "yanchor": "middle",
+                        }
+                    )
             fig_hm.update_layout(
                 font=_plot_base_font(),
+                annotations=hm_ann,
                 hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                 xaxis=dict(
                     side="bottom",
