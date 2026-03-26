@@ -29,6 +29,11 @@ NUMERIC_METRICS = [
     "SHARE_WITHIN_LOWEST_TAXONOMY",
     "SHARE_WITHIN_HEALTH_INTEREST",
 ]
+SHARE_COLS = frozenset(
+    {"SHARE_WITHIN_LOWEST_TAXONOMY", "SHARE_WITHIN_HEALTH_INTEREST"}
+)
+# Bump when in-memory scale for share columns changes (invalidates old 0–1 slider state).
+_SHARE_UI_VERSION = 2
 
 BAR_FILL = "#e6f1fc"
 CHART_TEXT = "#36485c"
@@ -79,13 +84,21 @@ def _axis_title_font() -> dict:
     return {"font": {"family": FONT_FAMILY, "color": CHART_TEXT}}
 
 
+def _metric_axis_label(metric_col: str) -> str:
+    """Axis / colorbar titles; share columns are stored as 0–100 (percent points)."""
+    base = metric_col.replace("_", " ")
+    if metric_col in SHARE_COLS:
+        return f"{base} (%)"
+    return base
+
+
 def _bar_data_labels(values: pd.Series, metric_col: str) -> list[str]:
     """Formatted values for bar annotations (all labels use textposition='outside')."""
     labels: list[str] = []
     for v in values.astype(float):
         f = float(v)
-        if "SHARE" in metric_col:
-            labels.append(f"{f:.3f}")
+        if metric_col in SHARE_COLS:
+            labels.append(f"{f:.1f}%")
         else:
             labels.append(f"{int(round(f)):,}")
     return labels
@@ -95,6 +108,27 @@ def _bar_label_font_size(num_bars: int) -> int:
     """Keep labels readable when many bars; taper slightly for very dense charts."""
     n = max(1, min(int(num_bars), 100))
     return int(max(13, min(14, 26.0 - n * 0.07)))
+
+
+def _heatmap_cell_labels(pivot: pd.DataFrame, cell_metric: str) -> list[list[str]]:
+    """Human-readable strings for each heatmap cell (NaN → empty)."""
+    rows: list[list[str]] = []
+    for _, row in pivot.iterrows():
+        cells: list[str] = []
+        for v in row:
+            if pd.isna(v):
+                cells.append("")
+            elif cell_metric == "REC_COUNT":
+                cells.append(f"{int(round(float(v))):,}")
+            else:
+                cells.append(f"{float(v):.1f}%")
+        rows.append(cells)
+    return rows
+
+
+def _heatmap_label_font_size(n_rows: int, n_cols: int) -> int:
+    n = max(n_rows * n_cols, 1)
+    return int(max(7, min(11, 18 - n**0.35)))
 
 
 def _weighted_mean(g: pd.DataFrame, col: str) -> float:
@@ -144,7 +178,7 @@ def _padded_range(
     floor: float | None = 0.0,
     ceiling: float | None = None,
 ) -> tuple[float, float]:
-    """Axis limits with padding; optional floor/ceiling (e.g. [0, 1] for shares)."""
+    """Axis limits with padding; optional floor/ceiling (e.g. [0, 100] for shares)."""
     if lo > hi:
         lo, hi = hi, lo
     if lo == hi:
@@ -188,6 +222,8 @@ def load_data(path_str: str) -> pd.DataFrame:
         raise ValueError(f"CSV missing columns: {sorted(missing)}")
     for col in NUMERIC_METRICS:
         df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in SHARE_COLS:
+        df[col] = df[col] * 100.0
     for col in TAXONOMY_FILTER_COLS:
         df[col] = df[col].fillna("").astype(str)
     df[HEALTH_COL] = df[HEALTH_COL].fillna("").astype(str)
@@ -243,12 +279,24 @@ def main() -> None:
     st.title("Taxonomy and health interest associations")
     st.caption(
         "Filter by taxonomy levels, then inspect recommendation count and share "
-        "within lowest taxonomy vs within health interest."
+        "within lowest taxonomy vs within health interest (shares shown as percentages, 0–100)."
     )
 
     data_path = resolve_data_csv()
     df = load_data(str(data_path))
     st.caption(f"Data file: `{data_path.name}`")
+
+    if st.session_state.get("_dashboard_ui_version") != _SHARE_UI_VERSION:
+        for k in (
+            "share_lt_slider",
+            "share_lt_min_input",
+            "share_lt_max_input",
+            "share_hi_slider",
+            "share_hi_min_input",
+            "share_hi_max_input",
+        ):
+            st.session_state.pop(k, None)
+        st.session_state["_dashboard_ui_version"] = _SHARE_UI_VERSION
 
     all_leaf = sorted_unique(df[LEAF_COL])
     all_interests = sorted_unique(df[HEALTH_COL])
@@ -400,16 +448,16 @@ def main() -> None:
         )
         reset_keys.extend(["rec_slider", "rec_min_input", "rec_max_input"])
 
-        st.markdown("**Share within lowest taxonomy**")
-        st.caption("Min/max fields accept decimals; slider is a quick adjustment.")
+        st.markdown("**Share within lowest taxonomy (%)**")
+        st.caption("Values are percent points (0–100); min/max and slider stay in sync.")
         s1, s2 = st.columns(2)
         with s1:
             st.number_input(
                 "Min",
                 min_value=smin_lt,
                 max_value=smax_lt,
-                step=0.0001,
-                format="%.6f",
+                step=0.01,
+                format="%.2f",
                 key="share_lt_min_input",
                 on_change=_sync_share_lt_from_typing,
             )
@@ -418,8 +466,8 @@ def main() -> None:
                 "Max",
                 min_value=smin_lt,
                 max_value=smax_lt,
-                step=0.0001,
-                format="%.6f",
+                step=0.01,
+                format="%.2f",
                 key="share_lt_max_input",
                 on_change=_sync_share_lt_from_typing,
             )
@@ -427,8 +475,8 @@ def main() -> None:
             "Range",
             min_value=smin_lt,
             max_value=smax_lt,
-            step=0.0001,
-            format="%.4f",
+            step=0.1,
+            format="%.1f",
             key="share_lt_slider",
             on_change=_sync_share_lt_from_slider,
         )
@@ -436,15 +484,15 @@ def main() -> None:
             ["share_lt_slider", "share_lt_min_input", "share_lt_max_input"]
         )
 
-        st.markdown("**Share within health interest**")
+        st.markdown("**Share within health interest (%)**")
         h1, h2 = st.columns(2)
         with h1:
             st.number_input(
                 "Min",
                 min_value=smin_h,
                 max_value=smax_h,
-                step=0.0001,
-                format="%.6f",
+                step=0.01,
+                format="%.2f",
                 key="share_hi_min_input",
                 on_change=_sync_share_hi_from_typing,
             )
@@ -453,8 +501,8 @@ def main() -> None:
                 "Max",
                 min_value=smin_h,
                 max_value=smax_h,
-                step=0.0001,
-                format="%.6f",
+                step=0.01,
+                format="%.2f",
                 key="share_hi_max_input",
                 on_change=_sync_share_hi_from_typing,
             )
@@ -462,8 +510,8 @@ def main() -> None:
             "Range",
             min_value=smin_h,
             max_value=smax_h,
-            step=0.0001,
-            format="%.4f",
+            step=0.1,
+            format="%.1f",
             key="share_hi_slider",
             on_change=_sync_share_hi_from_slider,
         )
@@ -522,6 +570,16 @@ def main() -> None:
             use_container_width=True,
             hide_index=True,
             height=480,
+            column_config={
+                "SHARE_WITHIN_LOWEST_TAXONOMY": st.column_config.NumberColumn(
+                    "Share within lowest taxonomy (%)",
+                    format="%.2f",
+                ),
+                "SHARE_WITHIN_HEALTH_INTEREST": st.column_config.NumberColumn(
+                    "Share within health interest (%)",
+                    format="%.2f",
+                ),
+            },
         )
         csv_bytes = show.to_csv(index=False).encode("utf-8")
         st.download_button(
@@ -570,7 +628,7 @@ def main() -> None:
                     y=HEALTH_COL,
                     orientation="h",
                     hover_data=[c for c in NUMERIC_METRICS if c in sub.columns],
-                    labels={rank_metric: rank_metric.replace("_", " ")},
+                    labels={rank_metric: _metric_axis_label(rank_metric)},
                     color_discrete_sequence=[BAR_FILL],
                 )
                 n_bars = len(sub)
@@ -645,7 +703,7 @@ def main() -> None:
                     y=LEAF_COL,
                     orientation="h",
                     hover_data=[c for c in NUMERIC_METRICS if c in sub_hi.columns],
-                    labels={rank_metric_hi: rank_metric_hi.replace("_", " ")},
+                    labels={rank_metric_hi: _metric_axis_label(rank_metric_hi)},
                     color_discrete_sequence=[BAR_FILL],
                 )
                 n_bars_hi = len(sub_hi)
@@ -722,23 +780,40 @@ def main() -> None:
                 aggfunc="max",
             )
             pivot = pivot.reindex(index=top_leaves, columns=top_his)
+            hm_text = _heatmap_cell_labels(pivot, cell_metric)
+            n_cols_hm = len(pivot.columns)
+            n_rows = len(pivot.index)
+            hm_lbl_px = _heatmap_label_font_size(n_rows, n_cols_hm)
+            hm_z_fmt = (
+                "%{z:,.0f}" if cell_metric == "REC_COUNT" else "%{z:.2f}%"
+            )
+            hm_hover = (
+                f"%{{y}}<br>%{{x}}<br>{_metric_axis_label(cell_metric)}: {hm_z_fmt}<extra></extra>"
+            )
             fig_hm = go.Figure(
                 data=go.Heatmap(
                     z=pivot.values,
                     x=pivot.columns.tolist(),
                     y=pivot.index.tolist(),
+                    text=hm_text,
+                    texttemplate="%{text}",
+                    textfont=dict(
+                        family=FONT_FAMILY,
+                        size=hm_lbl_px,
+                        color=CHART_TEXT,
+                    ),
                     colorscale="Blues",
                     hoverongaps=False,
+                    hovertemplate=hm_hover,
                     colorbar=dict(
                         title=dict(
-                            text=cell_metric.replace("_", " "),
+                            text=_metric_axis_label(cell_metric),
                             font=dict(family=FONT_FAMILY, color=CHART_TEXT, size=12),
                         ),
                         tickfont=dict(family=FONT_FAMILY, color=CHART_TEXT),
                     ),
                 )
             )
-            n_rows = len(pivot.index)
             fig_hm.update_layout(
                 font=_plot_base_font(),
                 hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
@@ -765,8 +840,8 @@ def main() -> None:
             hover_map = {
                 HEALTH_COL: True,
                 "REC_COUNT": True,
-                "SHARE_WITHIN_LOWEST_TAXONOMY": ":.4f",
-                "SHARE_WITHIN_HEALTH_INTEREST": ":.4f",
+                "SHARE_WITHIN_LOWEST_TAXONOMY": ":.2f",
+                "SHARE_WITHIN_HEALTH_INTEREST": ":.2f",
             }
             for c in hover_extra:
                 hover_map[c] = True
@@ -777,23 +852,37 @@ def main() -> None:
                 size="REC_COUNT",
                 hover_name=LEAF_COL,
                 hover_data=hover_map,
+                labels={
+                    "SHARE_WITHIN_LOWEST_TAXONOMY": _metric_axis_label(
+                        "SHARE_WITHIN_LOWEST_TAXONOMY"
+                    ),
+                    "SHARE_WITHIN_HEALTH_INTEREST": _metric_axis_label(
+                        "SHARE_WITHIN_HEALTH_INTEREST"
+                    ),
+                },
                 opacity=0.65,
             )
             fig_s.update_traces(marker=dict(line=dict(width=0.5, color="DarkSlateGrey")))
             xs = sample["SHARE_WITHIN_LOWEST_TAXONOMY"].astype(float)
             ys = sample["SHARE_WITHIN_HEALTH_INTEREST"].astype(float)
             sx0, sx1 = _padded_range(
-                float(xs.min()), float(xs.max()), floor=0.0, ceiling=1.0
+                float(xs.min()), float(xs.max()), floor=0.0, ceiling=100.0
             )
             sy0, sy1 = _padded_range(
-                float(ys.min()), float(ys.max()), floor=0.0, ceiling=1.0
+                float(ys.min()), float(ys.max()), floor=0.0, ceiling=100.0
             )
             fig_s.update_layout(
                 font=_plot_base_font(),
                 hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                 height=640,
-                xaxis=dict(range=[sx0, sx1]),
-                yaxis=dict(range=[sy0, sy1]),
+                xaxis=dict(
+                    range=[sx0, sx1],
+                    title=_metric_axis_label("SHARE_WITHIN_LOWEST_TAXONOMY"),
+                ),
+                yaxis=dict(
+                    range=[sy0, sy1],
+                    title=_metric_axis_label("SHARE_WITHIN_HEALTH_INTEREST"),
+                ),
             )
             fig_s.update_xaxes(
                 tickfont=_tick_font(),
