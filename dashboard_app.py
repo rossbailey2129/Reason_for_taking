@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import plotly.colors as pc
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
@@ -37,6 +39,7 @@ _SHARE_UI_VERSION = 2
 
 BAR_FILL = "#e6f1fc"
 CHART_TEXT = "#36485c"
+HEATMAP_COLORSCALE = "Blues"
 # Plotly + browser; load Besley via _inject_app_font() for Streamlit UI
 FONT_FAMILY = "Besley, Georgia, serif"
 
@@ -129,6 +132,75 @@ def _heatmap_cell_labels(pivot: pd.DataFrame, cell_metric: str) -> list[list[str
 def _heatmap_label_font_size(n_rows: int, n_cols: int) -> int:
     n = max(n_rows * n_cols, 1)
     return int(max(7, min(11, 18 - n**0.35)))
+
+
+def _parse_plotly_color_to_rgb(color: str) -> tuple[float, float, float]:
+    """Parse Plotly rgb()/rgba() or #RRGGBB into 0–255 components."""
+    c = color.strip()
+    if c.startswith("rgb"):
+        inner = c.split("(", 1)[1].rsplit(")", 1)[0]
+        parts = [float(x.strip()) for x in inner.split(",")[:3]]
+        return parts[0], parts[1], parts[2]
+    if c.startswith("#") and len(c) == 7:
+        return (
+            float(int(c[1:3], 16)),
+            float(int(c[3:5], 16)),
+            float(int(c[5:7], 16)),
+        )
+    raise ValueError(f"Unsupported color string: {color!r}")
+
+
+def _relative_luminance_srgb(r: float, g: float, b: float) -> float:
+    """WCAG relative luminance; r,g,b are 0–255 sRGB."""
+    def channel_lin(x: float) -> float:
+        u = x / 255.0
+        return u / 12.92 if u <= 0.03928 else ((u + 0.055) / 1.055) ** 2.4
+
+    return (
+        0.2126 * channel_lin(r)
+        + 0.7152 * channel_lin(g)
+        + 0.0722 * channel_lin(b)
+    )
+
+
+def _heatmap_cell_text_colors(
+    z: np.ndarray,
+    colorscale_name: str,
+    *,
+    dark_text: str = CHART_TEXT,
+    light_text: str = "#f8fafc",
+    lum_threshold: float = 0.52,
+) -> list[list[str]]:
+    """
+    One text color per cell so labels stay readable on the chosen colorscale.
+    Matches Plotly's mapping of z to the scale using the same zmin/zmax as the trace.
+    """
+    arr = np.asarray(z, dtype=float)
+    valid = arr[~np.isnan(arr)]
+    if valid.size == 0:
+        zmin, zmax = 0.0, 1.0
+    else:
+        zmin = float(np.nanmin(valid))
+        zmax = float(np.nanmax(valid))
+    rows: list[list[str]] = []
+    for i in range(arr.shape[0]):
+        row: list[str] = []
+        for j in range(arr.shape[1]):
+            v = arr[i, j]
+            if np.isnan(v):
+                row.append(dark_text)
+                continue
+            if zmax > zmin:
+                t = (float(v) - zmin) / (zmax - zmin)
+            else:
+                t = 0.5
+            t = max(0.0, min(1.0, t))
+            cstr = pc.sample_colorscale(colorscale_name, [t], colortype="rgb")[0]
+            r, g, b = _parse_plotly_color_to_rgb(cstr)
+            lum = _relative_luminance_srgb(r, g, b)
+            row.append(light_text if lum < lum_threshold else dark_text)
+        rows.append(row)
+    return rows
 
 
 def _weighted_mean(g: pd.DataFrame, col: str) -> float:
@@ -790,9 +862,26 @@ def main() -> None:
             hm_hover = (
                 f"%{{y}}<br>%{{x}}<br>{_metric_axis_label(cell_metric)}: {hm_z_fmt}<extra></extra>"
             )
+            z_hm = pivot.values.astype(float)
+            hm_text_colors = _heatmap_cell_text_colors(
+                z_hm, HEATMAP_COLORSCALE
+            )
+            colorbar_cfg: dict = dict(
+                title=dict(
+                    text=_metric_axis_label(cell_metric),
+                    font=dict(family=FONT_FAMILY, color=CHART_TEXT, size=12),
+                ),
+                tickfont=dict(family=FONT_FAMILY, color=CHART_TEXT),
+            )
+            if cell_metric in SHARE_COLS:
+                colorbar_cfg["tickformat"] = ".1f"
+                colorbar_cfg["ticksuffix"] = "%"
+                colorbar_cfg["showticksuffix"] = "all"
+            else:
+                colorbar_cfg["tickformat"] = ",.0f"
             fig_hm = go.Figure(
                 data=go.Heatmap(
-                    z=pivot.values,
+                    z=z_hm,
                     x=pivot.columns.tolist(),
                     y=pivot.index.tolist(),
                     text=hm_text,
@@ -800,18 +889,12 @@ def main() -> None:
                     textfont=dict(
                         family=FONT_FAMILY,
                         size=hm_lbl_px,
-                        color=CHART_TEXT,
+                        color=hm_text_colors,
                     ),
-                    colorscale="Blues",
+                    colorscale=HEATMAP_COLORSCALE,
                     hoverongaps=False,
                     hovertemplate=hm_hover,
-                    colorbar=dict(
-                        title=dict(
-                            text=_metric_axis_label(cell_metric),
-                            font=dict(family=FONT_FAMILY, color=CHART_TEXT, size=12),
-                        ),
-                        tickfont=dict(family=FONT_FAMILY, color=CHART_TEXT),
-                    ),
+                    colorbar=colorbar_cfg,
                 )
             )
             fig_hm.update_layout(
