@@ -413,6 +413,53 @@ def apply_filters(
     return out
 
 
+def apply_tab_excludes(
+    df: pd.DataFrame,
+    exclude_leaves: list[str],
+    exclude_interests: list[str],
+) -> pd.DataFrame:
+    """Remove rows whose lowest taxonomy or health interest appears in exclude lists."""
+    out = df
+    if exclude_leaves:
+        out = out[~out[LEAF_COL].isin(exclude_leaves)]
+    if exclude_interests:
+        out = out[~out[HEALTH_COL].isin(exclude_interests)]
+    return out
+
+
+def _tab_exclude_expander(tab_id: str, base: pd.DataFrame) -> pd.DataFrame:
+    """
+    Per-tab exclude multiselects (choices from current sidebar-filtered data).
+    Returns base with excluded taxonomies / interests removed.
+    """
+    leaf_opts = sorted_unique(base[LEAF_COL]) if len(base) else []
+    hi_opts = sorted_unique(base[HEALTH_COL]) if len(base) else []
+    with st.expander(
+        "Exclude from this tab (applies on top of sidebar filters)",
+        expanded=False,
+    ):
+        st.caption(
+            "Drop rows for any selected lowest taxonomy and/or health interest. "
+            "Other tabs keep their own exclude lists."
+        )
+        c1, c2 = st.columns(2)
+        with c1:
+            ex_leaves = st.multiselect(
+                "Exclude lowest taxonomies",
+                options=leaf_opts if leaf_opts else [""],
+                default=[],
+                key=f"tab_ex_leaf_{tab_id}",
+            )
+        with c2:
+            ex_interests = st.multiselect(
+                "Exclude health interests",
+                options=hi_opts if hi_opts else [""],
+                default=[],
+                key=f"tab_ex_hi_{tab_id}",
+            )
+    return apply_tab_excludes(base, ex_leaves, ex_interests)
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Taxonomy ↔ Health interest",
@@ -706,9 +753,12 @@ def main() -> None:
 
     with tab_table:
         st.subheader("Filtered rows")
+        tab_table_df = _tab_exclude_expander("table", filtered)
+        if tab_table_df.empty:
+            st.warning("No rows left after sidebar filters and this tab's excludes.")
         sort_opt = st.selectbox("Sort by", NUMERIC_METRICS)
         ascending = st.checkbox("Ascending", value=False)
-        show = filtered.sort_values(sort_opt, ascending=ascending)
+        show = tab_table_df.sort_values(sort_opt, ascending=ascending)
         st.dataframe(
             show,
             use_container_width=True,
@@ -739,13 +789,14 @@ def main() -> None:
             "Uses sidebar-filtered data. Leave **Lowest taxonomies** empty to rank "
             "interests across **all** rows; choose one or more taxonomies to narrow."
         )
+        tab_leaf_df = _tab_exclude_expander("leaf", filtered)
         rank_metric = st.radio(
             "Rank bars by",
             NUMERIC_METRICS,
             horizontal=True,
             key="metric_leaf_tab",
         )
-        leaf_opts = sorted_unique(filtered[LEAF_COL]) if len(filtered) else []
+        leaf_opts = sorted_unique(tab_leaf_df[LEAF_COL]) if len(tab_leaf_df) else []
         sel_leaves_tab = st.multiselect(
             "Lowest taxonomies (empty = all)",
             options=leaf_opts,
@@ -754,9 +805,9 @@ def main() -> None:
         )
         top_n = st.number_input("Top N interests", 5, 100, 20, key="topn_leaf")
         base_leaf = (
-            filtered
+            tab_leaf_df
             if not sel_leaves_tab
-            else filtered[filtered[LEAF_COL].isin(sel_leaves_tab)]
+            else tab_leaf_df[tab_leaf_df[LEAF_COL].isin(sel_leaves_tab)]
         )
         if base_leaf.empty:
             st.info("No rows match the current sidebar and tab filters.")
@@ -814,13 +865,14 @@ def main() -> None:
             "Uses sidebar-filtered data. Leave **Health interests** empty to rank "
             "lowest taxonomies across **all** rows; choose one or more interests to narrow."
         )
+        tab_hi_df = _tab_exclude_expander("hi", filtered)
         rank_metric_hi = st.radio(
             "Rank bars by",
             NUMERIC_METRICS,
             horizontal=True,
             key="metric_hi_tab",
         )
-        hi_opts = sorted_unique(filtered[HEALTH_COL]) if len(filtered) else []
+        hi_opts = sorted_unique(tab_hi_df[HEALTH_COL]) if len(tab_hi_df) else []
         sel_interests_tab = st.multiselect(
             "Health interests (empty = all)",
             options=hi_opts,
@@ -829,9 +881,9 @@ def main() -> None:
         )
         top_n_hi = st.number_input("Top N lowest taxonomies", 5, 100, 20, key="topn_hi")
         base_hi = (
-            filtered
+            tab_hi_df
             if not sel_interests_tab
-            else filtered[filtered[HEALTH_COL].isin(sel_interests_tab)]
+            else tab_hi_df[tab_hi_df[HEALTH_COL].isin(sel_interests_tab)]
         )
         if base_hi.empty:
             st.info("No rows match the current sidebar and tab filters.")
@@ -890,6 +942,7 @@ def main() -> None:
             "are shown. Large heatmaps keep their pixel size—scroll horizontally "
             "or vertically in the chart area when it exceeds the viewport."
         )
+        tab_matrix_df = _tab_exclude_expander("matrix", filtered)
         col_a, col_b, col_c = st.columns(3)
         with col_a:
             k_leaf = st.number_input(
@@ -899,24 +952,24 @@ def main() -> None:
             k_hi = st.number_input("Top health interests", 1, 80, 20)
         with col_c:
             cell_metric = st.selectbox("Cell value", NUMERIC_METRICS)
-        if filtered.empty:
-            st.warning("No data after filters.")
+        if tab_matrix_df.empty:
+            st.warning("No data after sidebar filters and this tab's excludes.")
         else:
-            leaf_totals = filtered.groupby(LEAF_COL, as_index=False)[
+            leaf_totals = tab_matrix_df.groupby(LEAF_COL, as_index=False)[
                 "REC_COUNT"
             ].sum()
             top_leaves = leaf_totals.nlargest(int(k_leaf), "REC_COUNT")[
                 LEAF_COL
             ].tolist()
-            hi_totals = filtered.groupby(HEALTH_COL, as_index=False)[
+            hi_totals = tab_matrix_df.groupby(HEALTH_COL, as_index=False)[
                 "REC_COUNT"
             ].sum()
             top_his = hi_totals.nlargest(int(k_hi), "REC_COUNT")[
                 HEALTH_COL
             ].tolist()
-            hm = filtered[
-                filtered[LEAF_COL].isin(top_leaves)
-                & filtered[HEALTH_COL].isin(top_his)
+            hm = tab_matrix_df[
+                tab_matrix_df[LEAF_COL].isin(top_leaves)
+                & tab_matrix_df[HEALTH_COL].isin(top_his)
             ]
             pivot = hm.pivot_table(
                 index=LEAF_COL,
@@ -1008,11 +1061,12 @@ def main() -> None:
     with tab_scatter:
         st.subheader("Share within lowest taxonomy vs within health interest")
         st.caption("Point size = recommendation count (filtered data).")
-        if filtered.empty:
-            st.warning("No data after filters.")
+        tab_scatter_df = _tab_exclude_expander("scatter", filtered)
+        if tab_scatter_df.empty:
+            st.warning("No data after sidebar filters and this tab's excludes.")
         else:
             max_points = st.slider("Max points to plot", 500, 9000, 4000)
-            sample = filtered.nlargest(max_points, "REC_COUNT")
+            sample = tab_scatter_df.nlargest(max_points, "REC_COUNT")
             hover_map = {
                 HEALTH_COL: True,
                 "REC_COUNT": True,
