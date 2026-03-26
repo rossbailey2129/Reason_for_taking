@@ -42,7 +42,7 @@ BAR_FILL = "#e6f1fc"
 CHART_TEXT = "#36485c"
 HEATMAP_COLORSCALE = "Blues"
 # Embedded heatmap viewport: larger values use more of the browser window before inner scroll.
-HEATMAP_EMBED_MAX_VIEWPORT_PX = 1320
+HEATMAP_EMBED_MAX_VIEWPORT_PX = 2000
 HEATMAP_EMBED_VIEWPORT_VH = 100
 # Plotly + browser; load Besley via _inject_app_font() for Streamlit UI
 FONT_FAMILY = "Besley, Georgia, serif"
