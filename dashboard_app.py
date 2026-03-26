@@ -148,6 +148,24 @@ def _heatmap_figure_height(n_rows: int) -> int:
     return int(min(8000, max(420, margin_stack + n_rows * per_row_px)))
 
 
+def _heatmap_figure_width(n_cols: int) -> int:
+    """
+    Total figure width scales with X-axis categories so columns stay wide enough
+    for tilted tick labels and in-cell text (used with use_container_width=False).
+    """
+    if n_cols <= 0:
+        return 720
+    # Matches margin.l=200; colorbar + right padding ~160px inside the figure.
+    horizontal_margin = 360
+    per_col_px = 44
+    return int(min(6000, max(720, horizontal_margin + n_cols * per_col_px)))
+
+
+def _heatmap_bottom_margin(n_cols: int) -> int:
+    """Extra space for -45° x tick labels when there are many columns."""
+    return int(min(320, max(180, 140 + n_cols * 4)))
+
+
 def _parse_plotly_color_to_rgb(color: str) -> tuple[float, float, float]:
     """Parse Plotly rgb()/rgba() or #RRGGBB into 0–255 components."""
     c = color.strip()
@@ -940,10 +958,11 @@ def main() -> None:
                     title=_axis_title_font(),
                 ),
                 yaxis=dict(tickfont=_tick_font(), title=_axis_title_font()),
+                width=_heatmap_figure_width(n_cols_hm),
                 height=_heatmap_figure_height(n_rows),
-                margin=dict(l=200, b=200),
+                margin=dict(l=200, b=_heatmap_bottom_margin(n_cols_hm)),
             )
-            st.plotly_chart(fig_hm, use_container_width=True)
+            st.plotly_chart(fig_hm, use_container_width=False)
 
     with tab_scatter:
         st.subheader("Share within lowest taxonomy vs within health interest")
