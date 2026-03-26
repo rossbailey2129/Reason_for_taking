@@ -13,6 +13,7 @@ import plotly.colors as pc
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -164,6 +165,31 @@ def _heatmap_figure_width(n_cols: int) -> int:
 def _heatmap_bottom_margin(n_cols: int) -> int:
     """Extra space for -45° x tick labels when there are many columns."""
     return int(min(320, max(180, 140 + n_cols * 4)))
+
+
+def _show_plotly_figure_horizontal_scroll(fig: go.Figure, *, iframe_pad: int = 40) -> None:
+    """
+    Embed Plotly in an iframe with an inner min-width so wide figures keep their
+    layout width and the user can scroll horizontally (st.plotly_chart often
+    squeezes charts into the column).
+    """
+    lw = fig.layout.width
+    lh = fig.layout.height
+    w = int(lw) if lw is not None else 900
+    h = int(lh) if lh is not None else 600
+    inner = fig.to_html(
+        include_plotlyjs="cdn",
+        full_html=False,
+        config={"responsive": False, "displayModeBar": True},
+    )
+    html = (
+        '<div style="overflow-x:auto;overflow-y:hidden;width:100%;'
+        '-webkit-overflow-scrolling:touch;">'
+        f'<div style="min-width:{w}px;width:{w}px;max-width:none;">'
+        f"{inner}"
+        "</div></div>"
+    )
+    components.html(html, height=h + iframe_pad, scrolling=True)
 
 
 def _parse_plotly_color_to_rgb(color: str) -> tuple[float, float, float]:
@@ -847,7 +873,8 @@ def main() -> None:
         st.subheader("Heatmap of top lowest taxonomies × top interests (after filters)")
         st.caption(
             "Only the busiest lowest taxonomies and interests in the filtered set "
-            "are shown."
+            "are shown. Wide heatmaps keep their pixel width—scroll horizontally "
+            "below if the chart extends past the page."
         )
         col_a, col_b, col_c = st.columns(3)
         with col_a:
@@ -962,7 +989,7 @@ def main() -> None:
                 height=_heatmap_figure_height(n_rows),
                 margin=dict(l=200, b=_heatmap_bottom_margin(n_cols_hm)),
             )
-            st.plotly_chart(fig_hm, use_container_width=False)
+            _show_plotly_figure_horizontal_scroll(fig_hm)
 
     with tab_scatter:
         st.subheader("Share within lowest taxonomy vs within health interest")
