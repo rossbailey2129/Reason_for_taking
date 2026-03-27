@@ -501,97 +501,19 @@ def _symmetric_axis_range(
     return -half, half
 
 
-def _quadrant_label_angle_bounds(xi: float, yi: float) -> tuple[float, float]:
-    """
-    Allowed atan2(y, x) interval (radians) so pixel offset (cos θ, -sin θ) from the
-    marker keeps the label in the correct screen wedge. Near-axis coordinates use
-    explicit branches so tiny float noise does not flip quadrants.
-    """
-    eps = 0.09
-    z = 1e-9
-    x, y = float(xi), float(yi)
-    if abs(x) < z and abs(y) < z:
-        return (eps, math.pi / 2 - eps)
-    if abs(x) < z and y > z:
-        return (eps, math.pi / 2 - eps)
-    if abs(x) < z and y < -z:
-        return (-math.pi + eps, -math.pi / 2 - eps)
-    if x > z and abs(y) < z:
-        return (-math.pi / 2 + eps, -eps)
-    if x < -z and abs(y) < z:
-        return (math.pi / 2 + eps, math.pi - eps)
-    if x > z and y > z:
-        return (eps, math.pi / 2 - eps)
-    if x < -z and y > z:
-        return (math.pi / 2 + eps, math.pi - eps)
-    if x < -z and y < -z:
-        return (-math.pi + eps, -math.pi / 2 - eps)
-    if x > z and y < -z:
-        return (-math.pi / 2 + eps, -eps)
-    return (eps, math.pi / 2 - eps)
-
-
-def _quad_coord_stack_indices(xs: np.ndarray, ys: np.ndarray, nd: int = 3) -> np.ndarray:
-    """Per identical rounded (x,y): 0,1,2,… for fanning labels off the same bubble."""
-    n = len(xs)
-    ctr: dict[tuple[float, float], int] = {}
-    out = np.zeros(n, dtype=int)
-    for i in range(n):
-        k = (round(float(xs[i]), nd), round(float(ys[i]), nd))
-        out[i] = ctr.get(k, 0)
-        ctr[k] = ctr.get(k, 0) + 1
-    return out
-
-
-def _quad_label_bbox_pixels(
-    px_anchor: float,
-    py_anchor: float,
-    ax: float,
-    ay: float,
-    text: str,
-    font_px: int,
-) -> tuple[float, float, float, float]:
-    """Axis-aligned bbox (x0, y0, x1, y1) for centered label text at anchor + (ax, ay)."""
-    tw = max(36.0, min(240.0, len(text) * font_px * 0.52 + 10.0))
-    th = max(14.0, font_px * 1.38 + 6.0)
-    cx = px_anchor + ax
-    cy = py_anchor + ay
-    return (cx - 0.5 * tw, cy - 0.5 * th, cx + 0.5 * tw, cy + 0.5 * th)
-
-
-def _quad_rects_overlap(
-    a: tuple[float, float, float, float],
-    b: tuple[float, float, float, float],
-    pad: float,
-) -> bool:
-    ax0, ay0, ax1, ay1 = a
-    bx0, by0, bx1, by1 = b
-    return not (
-        ax1 + pad <= bx0
-        or bx1 + pad <= ax0
-        or ay1 + pad <= by0
-        or by1 + pad <= ay0
-    )
-
-
 def _quadrant_point_label_annotations(
     plot_show: pd.DataFrame,
     dx_col: str,
     dy_col: str,
     *,
     max_chars: int = 30,
-    x_range: tuple[float, float] | None = None,
-    y_range: tuple[float, float] | None = None,
-    fig_height_px: float = 720.0,
-    margin_l: float = 72.0,
-    margin_r: float = 72.0,
-    margin_t: float = 88.0,
-    margin_b: float = 72.0,
 ) -> list[dict]:
     """
-    Lowest-taxonomy labels: outward from (0,0) within quadrant wedges, with greedy
-    pixel-space collision avoidance (outside-in order) so dense clusters fan instead
-    of stacking. Assumes square plot area (same as scaleanchor on the quadrant chart).
+    Lowest-taxonomy labels relative to chart origin (0, 0): each label lies on the ray
+    from the origin through the point, on the **far** side of the marker from (0, 0).
+    Leader length varies **linearly** with a stable sort (polar angle, then distance from
+    origin) so neighboring directions get staggered radii; identical (x, y) stacks get an
+    extra length step.
     """
     n = len(plot_show)
     if n == 0:
@@ -604,94 +526,41 @@ def _quadrant_point_label_annotations(
         rc_max = 1.0
     fs = int(max(7, min(10, 14 - n // 8)))
     mchars = max(16, min(max_chars, 36 - n // 6))
-    stack_ix = _quad_coord_stack_indices(xs, ys, nd=3)
 
-    xr0, xr1 = x_range if x_range is not None else (float(np.min(xs)), float(np.max(xs)))
-    yr0, yr1 = y_range if y_range is not None else (float(np.min(ys)), float(np.max(ys)))
-    xspan = xr1 - xr0
-    yspan = yr1 - yr0
-    if xspan <= 0:
-        xspan = 1.0
-    if yspan <= 0:
-        yspan = 1.0
-
-    # Square inner plot (matches y scaleanchor="x"); legend narrows usable width slightly.
-    ph = fig_height_px - margin_t - margin_b
-    pw = ph - 48.0
-    if pw < 120.0:
-        pw = ph
-
-    def data_to_px(xd: float, yd: float) -> tuple[float, float]:
-        px = margin_l + (xd - xr0) / xspan * pw
-        py = margin_t + (yr1 - yd) / yspan * ph
-        return px, py
-
-    angle_jitter = math.radians(5.5)
-    angle_offsets: list[float] = [0.0]
-    for k in range(1, 14):
-        d = math.radians(4.2 * k)
-        angle_offsets.append(d)
-        angle_offsets.append(-d)
-    radius_bumps = [0.0, 9.0, 18.0, 28.0, 38.0, 50.0, 62.0]
+    stack_ix = np.zeros(n, dtype=int)
+    seen_xy: dict[tuple[float, float], int] = {}
+    for i in range(n):
+        key = (round(float(xs[i]), 3), round(float(ys[i]), 3))
+        stack_ix[i] = seen_xy.get(key, 0)
+        seen_xy[key] = seen_xy.get(key, 0) + 1
 
     order = list(range(n))
-    order.sort(key=lambda i: -math.hypot(xs[i], ys[i]))
+    order.sort(key=lambda j: (math.atan2(ys[j], xs[j]), math.hypot(xs[j], ys[j])))
+    length_rank = {j: k for k, j in enumerate(order)}
 
-    occupied: list[tuple[float, float, float, float]] = []
-    pad_rect = 5.0
-
+    r_lo, r_hi = 34.0, 92.0
     out: list[dict] = []
-    for i in order:
+    for i in range(n):
         xi, yi = float(xs[i]), float(ys[i])
         h = math.hypot(xi, yi)
-        lo, hi = _quadrant_label_angle_bounds(xi, yi)
-        if h < 1e-9:
-            theta0 = 0.5 * (lo + hi)
+        if h < 1e-12:
+            theta = (i * 2.3999632297286533) % (2.0 * math.pi)
         else:
-            theta0 = math.atan2(yi, xi)
-        theta0 = min(max(theta0 + stack_ix[i] * angle_jitter, lo), hi)
+            theta = math.atan2(yi, xi)
+        u_ax = math.cos(theta)
+        u_ay = -math.sin(theta)
+
+        rk = length_rank[i]
+        if n <= 1:
+            r = 0.5 * (r_lo + r_hi)
+        else:
+            r = r_lo + (r_hi - r_lo) * (rk / (n - 1))
+        r += 8.0 * (float(rc[i]) / rc_max)
+        r += 12.0 * float(stack_ix[i])
+        r = min(118.0, r)
 
         leaf = str(plot_show.iloc[i][LEAF_COL])
         combo = leaf if len(leaf) <= mchars else leaf[: mchars - 1] + "…"
-        rec_norm = float(rc[i]) / rc_max
-        r_base = 34.0 + 9.0 * rec_norm
-        if n > 45:
-            r_base += 3.0
-
-        px_pt, py_pt = data_to_px(xi, yi)
-        chosen_ax = 0.0
-        chosen_ay = 0.0
-        chosen_rect: tuple[float, float, float, float] | None = None
-
-        for dr in radius_bumps:
-            r_try = min(94.0, r_base + dr)
-            for ad in angle_offsets:
-                th = min(max(theta0 + ad, lo), hi)
-                u_ax = math.cos(th)
-                u_ay = -math.sin(th)
-                ax_p = r_try * u_ax
-                ay_p = r_try * u_ay
-                bbox = _quad_label_bbox_pixels(px_pt, py_pt, ax_p, ay_p, combo, fs)
-                if any(_quad_rects_overlap(bbox, o, pad_rect) for o in occupied):
-                    continue
-                chosen_ax, chosen_ay = ax_p, ay_p
-                chosen_rect = bbox
-                break
-            if chosen_rect is not None:
-                break
-
-        if chosen_rect is None:
-            th = min(max(theta0, lo), hi)
-            u_ax = math.cos(th)
-            u_ay = -math.sin(th)
-            r_fallback = min(102.0, r_base + radius_bumps[-1] + 12.0)
-            chosen_ax = r_fallback * u_ax
-            chosen_ay = r_fallback * u_ay
-            chosen_rect = _quad_label_bbox_pixels(
-                px_pt, py_pt, chosen_ax, chosen_ay, combo, fs
-            )
-
-        occupied.append(chosen_rect)
         out.append(
             {
                 "x": xi,
@@ -701,13 +570,13 @@ def _quadrant_point_label_annotations(
                 "text": combo,
                 "showarrow": True,
                 "arrowhead": 2,
-                "arrowsize": 0.8,
-                "arrowwidth": 0.7,
+                "arrowsize": 0.85,
+                "arrowwidth": 0.75,
                 "arrowcolor": CHART_TEXT,
                 "axref": "pixel",
                 "ayref": "pixel",
-                "ax": int(chosen_ax),
-                "ay": int(chosen_ay),
+                "ax": int(r * u_ax),
+                "ay": int(r * u_ay),
                 "font": dict(family=FONT_FAMILY, size=fs, color=CHART_TEXT),
                 "align": "center",
                 "bgcolor": "rgba(255,255,255,0.82)",
@@ -1368,9 +1237,9 @@ def main() -> None:
                     f"Cohort medians (plotted points): "
                     f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**, "
                     f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**. "
-                    "**Point color** is health interest. Labels stay in each **quadrant wedge** and "
-                    "use **collision-aware** placement (outside points first, then angle/radius "
-                    "search) to reduce stacking in dense corners."
+                    "**Point color** is health interest. Labels sit on the ray **from (0, 0) through "
+                    "each point** (opposite the origin from the bubble), with **linearly stepped** "
+                    "leader lengths to spread text."
                 )
                 plot_show = plot_df.rename(
                     columns={
@@ -1428,11 +1297,7 @@ def main() -> None:
                 xr0, xr1 = -half, half
                 yr0, yr1 = -half, half
                 quad_labels = _quadrant_point_label_annotations(
-                    plot_show,
-                    dx_col,
-                    dy_col,
-                    x_range=(xr0, xr1),
-                    y_range=(yr0, yr1),
+                    plot_show, dx_col, dy_col
                 )
                 fig_q.update_layout(
                     font=_plot_base_font(),
