@@ -1378,8 +1378,8 @@ def main() -> None:
                     _pk = f"{_pr[LEAF_COL]}{_QUAD_PAIR_KEY_SEP}{_pr[HEALTH_COL]}"
                     _pair_keys.append(_pk)
                     _pair_labels[_pk] = f"{_pr[LEAF_COL]} — {_pr[HEALTH_COL]}"
-                if _QUAD_HIDDEN_MARKERS_KEY not in st.session_state:
-                    st.session_state[_QUAD_HIDDEN_MARKERS_KEY] = []
+                if _QUAD_MARKER_HIDE_MS_KEY not in st.session_state:
+                    st.session_state[_QUAD_MARKER_HIDE_MS_KEY] = []
                 _quadrant_apply_plotly_marker_hides()
                 _quad_show_lbl = st.session_state.get("quad_show_point_labels", True)
                 _quad_hidden_pairs = st.session_state.get("quad_hidden_label_pairs", [])
