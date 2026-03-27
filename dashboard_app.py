@@ -1302,21 +1302,8 @@ def main() -> None:
                     _pk = f"{_pr[LEAF_COL]}{_QUAD_PAIR_KEY_SEP}{_pr[HEALTH_COL]}"
                     _pair_keys.append(_pk)
                     _pair_labels[_pk] = f"{_pr[LEAF_COL]} — {_pr[HEALTH_COL]}"
-                _quad_show_lbl = st.checkbox(
-                    "Show point labels (lowest taxonomy)",
-                    value=True,
-                    key="quad_show_point_labels",
-                )
-                _quad_hidden_pairs = st.multiselect(
-                    "Hide labels for these taxonomy × health interest pairs",
-                    options=_pair_keys,
-                    format_func=lambda k: _pair_labels[k],
-                    default=[],
-                    key="quad_hidden_label_pairs",
-                    disabled=not _quad_show_lbl,
-                    help="Select pairs to drop the text label only; the marker stays. "
-                    "Options match the current plotted slice.",
-                )
+                _quad_show_lbl = st.session_state.get("quad_show_point_labels", True)
+                _quad_hidden_pairs = st.session_state.get("quad_hidden_label_pairs", [])
                 x_col = "ln(interest share+1) − median"
                 y_col = "ln(taxonomy share+1) − median"
                 plot_show = plot_df.rename(
@@ -1410,6 +1397,25 @@ def main() -> None:
                 fig_q.update_xaxes(tickfont=_tick_font(), title="")
                 fig_q.update_yaxes(tickfont=_tick_font(), title="")
                 st.plotly_chart(fig_q, use_container_width=True)
+                with st.expander("Point labels", expanded=False):
+                    st.caption(
+                        "Turn names on or off, or hide specific taxonomy × health interest pairs. "
+                        "Markers stay on the chart."
+                    )
+                    st.checkbox(
+                        "Show point labels (lowest taxonomy)",
+                        value=True,
+                        key="quad_show_point_labels",
+                    )
+                    st.multiselect(
+                        "Hide labels for these taxonomy × health interest pairs",
+                        options=_pair_keys,
+                        format_func=lambda k: _pair_labels[k],
+                        key="quad_hidden_label_pairs",
+                        disabled=not st.session_state.get("quad_show_point_labels", True),
+                        help="Select pairs to drop the text label only; the marker stays. "
+                        "Options match the current plotted slice.",
+                    )
 
 
 if __name__ == "__main__":
