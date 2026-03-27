@@ -1257,6 +1257,7 @@ def main() -> None:
                     y=y_col,
                     size="REC_COUNT",
                     color=HEALTH_COL,
+                    text=LEAF_COL,
                     hover_name=LEAF_COL,
                     labels={
                         x_col: "ln(share within health interest + 1) − cohort median",
@@ -1265,7 +1266,9 @@ def main() -> None:
                     opacity=0.65,
                 )
                 fig_q.update_traces(
-                    mode="markers",
+                    mode="markers+text",
+                    textposition="top center",
+                    textfont=dict(family=FONT_FAMILY, size=9, color=CHART_TEXT),
                     marker=dict(line=dict(width=0.5, color="DarkSlateGrey")),
                     hovertemplate="<b>%{hovertext}</b><extra></extra>",
                 )
@@ -1299,7 +1302,7 @@ def main() -> None:
                     font=_plot_base_font(),
                     hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                     height=720,
-                    margin=dict(l=88, r=88, t=100, b=100),
+                    margin=dict(l=112, r=88, t=100, b=112),
                     annotations=_quadrant_label_annotations(),
                     xaxis=dict(range=[xr0, xr1], zeroline=False),
                     yaxis=dict(range=[yr0, yr1], zeroline=False),
@@ -1308,8 +1311,27 @@ def main() -> None:
                         font=dict(family=FONT_FAMILY, color=CHART_TEXT),
                     ),
                 )
-                fig_q.update_xaxes(tickfont=_tick_font(), title="")
-                fig_q.update_yaxes(tickfont=_tick_font(), title="")
+                _title_font = dict(family=FONT_FAMILY, size=13, color=CHART_TEXT)
+                fig_q.update_xaxes(
+                    tickfont=_tick_font(),
+                    title=dict(
+                        text=(
+                            "Health-interest side — above or below typical for this chart? "
+                            "<br><sup>0 = typical; numbers use a log-style stretch of the % shares</sup>"
+                        ),
+                        font=_title_font,
+                    ),
+                )
+                fig_q.update_yaxes(
+                    tickfont=_tick_font(),
+                    title=dict(
+                        text=(
+                            "Product-category side — above or below typical for this chart? "
+                            "<br><sup>0 = typical; numbers use a log-style stretch of the % shares</sup>"
+                        ),
+                        font=_title_font,
+                    ),
+                )
                 st.plotly_chart(fig_q, use_container_width=True)
 
 
