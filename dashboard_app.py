@@ -553,6 +553,78 @@ def _quadrant_label_annotations() -> list[dict]:
     ]
 
 
+def _quadrant_point_leader_annotations(
+    plot_show: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+) -> list[dict]:
+    """
+    One annotation per point: arrow from label (tail, pixel offset) to marker (head, data).
+    Radial direction from chart center through the point, with length/angle backoff to reduce
+    label overlap (coarse pixel-bin reservation).
+    """
+    df = plot_show.sort_values([y_col, x_col, LEAF_COL], kind="mergesort").reset_index(
+        drop=True
+    )
+    used_bins: set[tuple[int, int]] = set()
+    gold = 2.39996322972865332
+    out: list[dict] = []
+    for idx, row in df.iterrows():
+        xd = float(row[x_col])
+        yd = float(row[y_col])
+        leaf = str(row[LEAF_COL])
+        den = math.hypot(xd, yd)
+        if den < 1e-9:
+            theta = idx * gold
+        else:
+            theta = math.atan2(yd, xd)
+        theta += (idx % 11) * 0.065
+        base_r = 28.0
+        ax_i, ay_i = 0, 0
+        for attempt in range(32):
+            r = base_r + attempt * 4.5 + (idx % 6) * 2.5
+            t = theta + attempt * 0.22
+            ax_i = int(round(r * math.cos(t)))
+            ay_i = int(round(-r * math.sin(t)))
+            bx, by = ax_i // 18, ay_i // 18
+            neighbors = (
+                (bx, by),
+                (bx + 1, by),
+                (bx - 1, by),
+                (bx, by + 1),
+                (bx, by - 1),
+            )
+            if not any(n in used_bins for n in neighbors):
+                for n in neighbors:
+                    used_bins.add(n)
+                break
+        out.append(
+            {
+                "xref": "x",
+                "yref": "y",
+                "x": xd,
+                "y": yd,
+                "text": leaf,
+                "showarrow": True,
+                "arrowhead": 2,
+                "arrowsize": 0.65,
+                "arrowwidth": 1,
+                "arrowcolor": CHART_TEXT,
+                "standoff": 6,
+                "ax": ax_i,
+                "ay": ay_i,
+                "font": dict(family=FONT_FAMILY, size=9, color=CHART_TEXT),
+                "bgcolor": "rgba(255,255,255,0.78)",
+                "borderpad": 2,
+                "opacity": 0.96,
+                "xanchor": "center",
+                "yanchor": "middle",
+                "captureevents": False,
+            }
+        )
+    return out
+
+
 def _quadrant_plot_frame(
     df: pd.DataFrame,
     selected_interests: list[str],
@@ -1257,7 +1329,6 @@ def main() -> None:
                     y=y_col,
                     size="REC_COUNT",
                     color=HEALTH_COL,
-                    text=LEAF_COL,
                     hover_name=LEAF_COL,
                     labels={
                         x_col: "ln(share within health interest + 1) − cohort median",
@@ -1266,9 +1337,7 @@ def main() -> None:
                     opacity=0.65,
                 )
                 fig_q.update_traces(
-                    mode="markers+text",
-                    textposition="top center",
-                    textfont=dict(family=FONT_FAMILY, size=9, color=CHART_TEXT),
+                    mode="markers",
                     marker=dict(line=dict(width=0.5, color="DarkSlateGrey")),
                     hovertemplate="<b>%{hovertext}</b><extra></extra>",
                 )
@@ -1302,8 +1371,9 @@ def main() -> None:
                     font=_plot_base_font(),
                     hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                     height=720,
-                    margin=dict(l=112, r=88, t=100, b=112),
-                    annotations=_quadrant_label_annotations(),
+                    margin=dict(l=96, r=96, t=100, b=100),
+                    annotations=_quadrant_label_annotations()
+                    + _quadrant_point_leader_annotations(plot_show, x_col, y_col),
                     xaxis=dict(range=[xr0, xr1], zeroline=False),
                     yaxis=dict(range=[yr0, yr1], zeroline=False),
                     legend=dict(
@@ -1311,27 +1381,8 @@ def main() -> None:
                         font=dict(family=FONT_FAMILY, color=CHART_TEXT),
                     ),
                 )
-                _title_font = dict(family=FONT_FAMILY, size=13, color=CHART_TEXT)
-                fig_q.update_xaxes(
-                    tickfont=_tick_font(),
-                    title=dict(
-                        text=(
-                            "Health-interest side — above or below typical for this chart? "
-                            "<br><sup>0 = typical; numbers use a log-style stretch of the % shares</sup>"
-                        ),
-                        font=_title_font,
-                    ),
-                )
-                fig_q.update_yaxes(
-                    tickfont=_tick_font(),
-                    title=dict(
-                        text=(
-                            "Product-category side — above or below typical for this chart? "
-                            "<br><sup>0 = typical; numbers use a log-style stretch of the % shares</sup>"
-                        ),
-                        font=_title_font,
-                    ),
-                )
+                fig_q.update_xaxes(tickfont=_tick_font(), title="")
+                fig_q.update_yaxes(tickfont=_tick_font(), title="")
                 st.plotly_chart(fig_q, use_container_width=True)
 
 
