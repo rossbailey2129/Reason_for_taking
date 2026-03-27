@@ -5,6 +5,7 @@ Run: streamlit run dashboard_app.py
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -500,25 +501,6 @@ def _symmetric_axis_range(
     return -half, half
 
 
-# Pixel offsets (ax, ay) for label text vs marker; +x = right, +y = down (screen).
-# Order: left, upper-left, above, upper-right, right — for points with y > 0 (above x-axis).
-_QUADRANT_LABEL_UP_PX: tuple[tuple[int, int], ...] = (
-    (-1, 0),
-    (-1, -1),
-    (0, -1),
-    (1, -1),
-    (1, 0),
-)
-# Mirror below y=0: right, lower-right, below, lower-left, left.
-_QUADRANT_LABEL_DOWN_PX: tuple[tuple[int, int], ...] = (
-    (1, 0),
-    (1, 1),
-    (0, 1),
-    (-1, 1),
-    (-1, 0),
-)
-
-
 def _quadrant_point_label_annotations(
     plot_show: pd.DataFrame,
     dx_col: str,
@@ -527,9 +509,9 @@ def _quadrant_point_label_annotations(
     max_chars: int = 30,
 ) -> list[dict]:
     """
-    Lowest-taxonomy labels with leader lines. Points above the horizontal y=0 line
-    cycle through left → upper-left → above → upper-right → right; points on or below
-    use the mirrored downward set (right → lower-right → below → lower-left → left).
+    Lowest-taxonomy labels with leader lines. Each label sits along the ray from
+    (0, 0) through the point—i.e. outward from both axis intercepts into that point’s
+    quadrant—with a small angle spread so nearby points do not share one direction.
     """
     n = len(plot_show)
     if n == 0:
@@ -543,56 +525,59 @@ def _quadrant_point_label_annotations(
     fs = int(max(7, min(10, 14 - n // 8)))
     mchars = max(18, min(max_chars, 38 - n // 6))
 
-    above_idx = [i for i in range(n) if ys[i] > 0]
-    below_idx = [i for i in range(n) if ys[i] <= 0]
-    above_idx.sort(key=lambda i: (xs[i], ys[i]))
-    below_idx.sort(key=lambda i: (xs[i], ys[i]))
+    # Polar sort so sequential spread tends to separate labels in crowded wedges.
+    order = list(range(n))
+    order.sort(key=lambda i: (math.atan2(ys[i], xs[i]), math.hypot(xs[i], ys[i])))
 
-    def ann_for(i: int, seq: int, up: bool) -> dict:
-        du, dv = (
-            _QUADRANT_LABEL_UP_PX[seq % 5]
-            if up
-            else _QUADRANT_LABEL_DOWN_PX[seq % 5]
-        )
-        ln = float((du * du + dv * dv) ** 0.5)
-        rec_norm = float(rc[i]) / rc_max
-        ring = seq // 5
-        r = 40.0 + ring * 9.0 + 10.0 * rec_norm
-        if n > 50:
-            r += 4.0
-        r = min(118.0, r)
-        ax_pix = int(r * du / ln)
-        ay_pix = int(r * dv / ln)
-        xi, yi = float(xs[i]), float(ys[i])
-        leaf = str(plot_show.iloc[i][LEAF_COL])
-        combo = leaf if len(leaf) <= mchars else leaf[: mchars - 1] + "…"
-        return {
-            "x": xi,
-            "y": yi,
-            "xref": "x",
-            "yref": "y",
-            "text": combo,
-            "showarrow": True,
-            "arrowhead": 2,
-            "arrowsize": 0.85,
-            "arrowwidth": 0.75,
-            "arrowcolor": CHART_TEXT,
-            "axref": "pixel",
-            "ayref": "pixel",
-            "ax": ax_pix,
-            "ay": ay_pix,
-            "font": dict(family=FONT_FAMILY, size=fs, color=CHART_TEXT),
-            "align": "center",
-            "bgcolor": "rgba(255,255,255,0.78)",
-            "borderwidth": 0,
-            "borderpad": 2,
-        }
+    n_spread = 7
+    spread_step = math.radians(8.0)
+    spread_angles = [(k - n_spread // 2) * spread_step for k in range(n_spread)]
 
     out: list[dict] = []
-    for seq, i in enumerate(above_idx):
-        out.append(ann_for(i, seq, up=True))
-    for seq, i in enumerate(below_idx):
-        out.append(ann_for(i, seq, up=False))
+    for seq, i in enumerate(order):
+        xi, yi = float(xs[i]), float(ys[i])
+        h = math.hypot(xi, yi)
+        if h < 1e-9:
+            theta = (i * 2.5132741228718345) % (2.0 * math.pi)
+        else:
+            theta = math.atan2(yi, xi)
+        theta_eff = theta + spread_angles[seq % n_spread]
+        # Data +y is up; screen +ay is down → flip sine for pixel offset.
+        u_ax = math.cos(theta_eff)
+        u_ay = -math.sin(theta_eff)
+        rec_norm = float(rc[i]) / rc_max
+        ring = seq // n_spread
+        r = 38.0 + ring * 10.0 + 11.0 * rec_norm
+        if n > 50:
+            r += 4.0
+        r = min(120.0, r)
+        ax_pix = int(r * u_ax)
+        ay_pix = int(r * u_ay)
+        leaf = str(plot_show.iloc[i][LEAF_COL])
+        combo = leaf if len(leaf) <= mchars else leaf[: mchars - 1] + "…"
+        out.append(
+            {
+                "x": xi,
+                "y": yi,
+                "xref": "x",
+                "yref": "y",
+                "text": combo,
+                "showarrow": True,
+                "arrowhead": 2,
+                "arrowsize": 0.85,
+                "arrowwidth": 0.75,
+                "arrowcolor": CHART_TEXT,
+                "axref": "pixel",
+                "ayref": "pixel",
+                "ax": ax_pix,
+                "ay": ay_pix,
+                "font": dict(family=FONT_FAMILY, size=fs, color=CHART_TEXT),
+                "align": "center",
+                "bgcolor": "rgba(255,255,255,0.78)",
+                "borderwidth": 0,
+                "borderpad": 2,
+            }
+        )
     return out
 
 
@@ -1245,8 +1230,9 @@ def main() -> None:
                     f"Cohort medians (plotted points): "
                     f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**, "
                     f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**. "
-                    "**Point color** is health interest. Labels show lowest taxonomy; above **y = 0** "
-                    "they fan upward (left through right); on or below **y = 0** they fan downward."
+                    "**Point color** is health interest. Labels show lowest taxonomy, placed **outward "
+                    "from (0, 0)** along the ray through each point (away from both axis intercepts), "
+                    "with a small angle spread when many points share a direction."
                 )
                 plot_show = plot_df.rename(
                     columns={
