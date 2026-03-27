@@ -553,75 +553,37 @@ def _quadrant_label_annotations() -> list[dict]:
     ]
 
 
-def _quadrant_point_leader_annotations(
-    plot_show: pd.DataFrame,
+def _quadrant_top_labels_by_quadrant_distance(
+    ps: pd.DataFrame,
     x_col: str,
     y_col: str,
-) -> list[dict]:
+    *,
+    top_per_quadrant: int = 5,
+) -> pd.DataFrame:
     """
-    One annotation per point: arrow from label (tail, pixel offset) to marker (head, data).
-    Radial direction from chart center through the point, with length/angle backoff to reduce
-    label overlap (coarse pixel-bin reservation).
+    Add ``quad_label``: lowest-taxonomy name for the ``top_per_quadrant`` points farthest
+    from (0, 0) in **each** of the four axis quadrants; others get an empty string.
+    Quadrants: TR x≥0,y≥0; TL x<0,y≥0; BL x<0,y<0; BR x≥0,y<0.
     """
-    df = plot_show.sort_values([y_col, x_col, LEAF_COL], kind="mergesort").reset_index(
-        drop=True
+    out = ps.copy()
+    xv = out[x_col].astype(float)
+    yv = out[y_col].astype(float)
+    dist = np.sqrt(xv * xv + yv * yv)
+    out["quad_label"] = ""
+    masks = (
+        (xv >= 0) & (yv >= 0),
+        (xv < 0) & (yv >= 0),
+        (xv < 0) & (yv < 0),
+        (xv >= 0) & (yv < 0),
     )
-    used_bins: set[tuple[int, int]] = set()
-    gold = 2.39996322972865332
-    out: list[dict] = []
-    for idx, row in df.iterrows():
-        xd = float(row[x_col])
-        yd = float(row[y_col])
-        leaf = str(row[LEAF_COL])
-        den = math.hypot(xd, yd)
-        if den < 1e-9:
-            theta = idx * gold
-        else:
-            theta = math.atan2(yd, xd)
-        theta += (idx % 11) * 0.065
-        base_r = 28.0
-        ax_i, ay_i = 0, 0
-        for attempt in range(32):
-            r = base_r + attempt * 4.5 + (idx % 6) * 2.5
-            t = theta + attempt * 0.22
-            ax_i = int(round(r * math.cos(t)))
-            ay_i = int(round(-r * math.sin(t)))
-            bx, by = ax_i // 18, ay_i // 18
-            neighbors = (
-                (bx, by),
-                (bx + 1, by),
-                (bx - 1, by),
-                (bx, by + 1),
-                (bx, by - 1),
-            )
-            if not any(n in used_bins for n in neighbors):
-                for n in neighbors:
-                    used_bins.add(n)
-                break
-        out.append(
-            {
-                "xref": "x",
-                "yref": "y",
-                "x": xd,
-                "y": yd,
-                "text": leaf,
-                "showarrow": True,
-                "arrowhead": 2,
-                "arrowsize": 0.65,
-                "arrowwidth": 1,
-                "arrowcolor": CHART_TEXT,
-                "standoff": 6,
-                "ax": ax_i,
-                "ay": ay_i,
-                "font": dict(family=FONT_FAMILY, size=9, color=CHART_TEXT),
-                "bgcolor": "rgba(255,255,255,0.78)",
-                "borderpad": 2,
-                "opacity": 0.96,
-                "xanchor": "center",
-                "yanchor": "middle",
-                "captureevents": False,
-            }
+    for mask in masks:
+        sub = out.loc[mask]
+        if sub.empty:
+            continue
+        ranked = sub.assign(_qdist=dist.loc[sub.index]).nlargest(
+            min(top_per_quadrant, len(sub)), "_qdist"
         )
+        out.loc[ranked.index, "quad_label"] = ranked[LEAF_COL].astype(str)
     return out
 
 
@@ -1316,12 +1278,17 @@ def main() -> None:
                     f"**Raw share medians (among plotted points, %):** "
                     f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**, "
                     f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**. "
-                    "Chart origin uses **median of ln(share+1)** per axis, not these raw medians."
+                    "Chart origin uses **median of ln(share+1)** per axis, not these raw medians. "
+                    "**Labels:** up to **5** per quadrant — farthest from **(0, 0)** by Euclidean "
+                    "distance in the chart coordinates."
                 )
                 x_col = "ln(interest share+1) − median"
                 y_col = "ln(taxonomy share+1) − median"
                 plot_show = plot_df.rename(
                     columns={"x_vs_median_log": x_col, "y_vs_median_log": y_col}
+                )
+                plot_show = _quadrant_top_labels_by_quadrant_distance(
+                    plot_show, x_col, y_col, top_per_quadrant=5
                 )
                 fig_q = px.scatter(
                     plot_show,
@@ -1329,6 +1296,7 @@ def main() -> None:
                     y=y_col,
                     size="REC_COUNT",
                     color=HEALTH_COL,
+                    text="quad_label",
                     hover_name=LEAF_COL,
                     labels={
                         x_col: "ln(share within health interest + 1) − cohort median",
@@ -1337,7 +1305,9 @@ def main() -> None:
                     opacity=0.65,
                 )
                 fig_q.update_traces(
-                    mode="markers",
+                    mode="markers+text",
+                    textposition="top center",
+                    textfont=dict(family=FONT_FAMILY, size=9, color=CHART_TEXT),
                     marker=dict(line=dict(width=0.5, color="DarkSlateGrey")),
                     hovertemplate="<b>%{hovertext}</b><extra></extra>",
                 )
@@ -1372,8 +1342,7 @@ def main() -> None:
                     hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                     height=720,
                     margin=dict(l=96, r=96, t=100, b=100),
-                    annotations=_quadrant_label_annotations()
-                    + _quadrant_point_leader_annotations(plot_show, x_col, y_col),
+                    annotations=_quadrant_label_annotations(),
                     xaxis=dict(range=[xr0, xr1], zeroline=False),
                     yaxis=dict(range=[yr0, yr1], zeroline=False),
                     legend=dict(
