@@ -5,6 +5,7 @@ Run: streamlit run dashboard_app.py
 
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 
@@ -41,6 +42,11 @@ _SHARE_UI_VERSION = 2
 # Quadrant tab: Top N widget session key (fresh key avoids stale “all taxa” values).
 _QUADRANT_TOP_N_KEY = "quad_top_n_chart"
 _QUAD_PAIR_KEY_SEP = "\x1f"
+# Quadrant: Plotly point selection → hide markers (needs streamlit>=1.35).
+_QUAD_PLOTLY_WIDGET_KEY = "quad_scatter_plotly"
+# Multiselect session key; Plotly click-handler merges into this before the widget runs.
+_QUAD_MARKER_HIDE_MS_KEY = "quad_marker_hide_ms"
+_QUAD_PLOTLY_LAST_SEL_SIG_KEY = "quad_plotly_selection_sig"
 
 BAR_FILL = "#e6f1fc"
 CHART_TEXT = "#36485c"
@@ -638,6 +644,76 @@ def _quadrant_plot_frame(
     plot_df["x_vs_median_log"] = xp - med_xp
     plot_df["y_vs_median_log"] = yp - med_yp
     return plot_df, med_hi, med_lt
+
+
+def _pair_key_from_plotly_point(pt: dict) -> str | None:
+    cd = pt.get("customdata")
+    if cd is None:
+        return None
+    if hasattr(cd, "tolist"):
+        cd = cd.tolist()
+    if not isinstance(cd, (list, tuple)) or len(cd) < 2:
+        return None
+    return f"{cd[0]}{_QUAD_PAIR_KEY_SEP}{cd[1]}"
+
+
+def _quadrant_plotly_selection_points(widget_state: object) -> list[dict]:
+    if widget_state is None:
+        return []
+    sel = (
+        widget_state["selection"]
+        if isinstance(widget_state, dict)
+        else getattr(widget_state, "selection", None)
+    )
+    if sel is None:
+        return []
+    pts = sel["points"] if isinstance(sel, dict) else getattr(sel, "points", None)
+    return list(pts or [])
+
+
+def _quadrant_selection_signature(points: list[dict]) -> str:
+    if not points:
+        return ""
+    parts: list[tuple[object, ...]] = []
+    for p in points:
+        cd = p.get("customdata")
+        if cd is None:
+            cdt: tuple[object, ...] = ()
+        elif hasattr(cd, "tolist"):
+            cdt = tuple(cd.tolist())
+        elif isinstance(cd, (list, tuple)):
+            cdt = tuple(cd)
+        else:
+            cdt = ()
+        head = cdt[:2] if len(cdt) >= 2 else cdt
+        parts.append(
+            (
+                p.get("curve_number"),
+                p.get("point_index"),
+                p.get("point_number"),
+                head,
+            )
+        )
+    return json.dumps(parts, default=str)
+
+
+def _quadrant_apply_plotly_marker_hides() -> None:
+    """Append taxonomy×interest pairs from the latest Plotly selection to hidden markers."""
+    if _QUAD_PLOTLY_WIDGET_KEY not in st.session_state:
+        return
+    pts = _quadrant_plotly_selection_points(st.session_state[_QUAD_PLOTLY_WIDGET_KEY])
+    sig = _quadrant_selection_signature(pts)
+    if sig == st.session_state.get(_QUAD_PLOTLY_LAST_SEL_SIG_KEY):
+        return
+    st.session_state[_QUAD_PLOTLY_LAST_SEL_SIG_KEY] = sig
+    if not pts:
+        return
+    hs = set(st.session_state.get(_QUAD_MARKER_HIDE_MS_KEY) or [])
+    for pt in pts:
+        pk = _pair_key_from_plotly_point(pt)
+        if pk:
+            hs.add(pk)
+    st.session_state[_QUAD_MARKER_HIDE_MS_KEY] = sorted(hs)
 
 
 def main() -> None:
@@ -1302,6 +1378,9 @@ def main() -> None:
                     _pk = f"{_pr[LEAF_COL]}{_QUAD_PAIR_KEY_SEP}{_pr[HEALTH_COL]}"
                     _pair_keys.append(_pk)
                     _pair_labels[_pk] = f"{_pr[LEAF_COL]} — {_pr[HEALTH_COL]}"
+                if _QUAD_HIDDEN_MARKERS_KEY not in st.session_state:
+                    st.session_state[_QUAD_HIDDEN_MARKERS_KEY] = []
+                _quadrant_apply_plotly_marker_hides()
                 _quad_show_lbl = st.session_state.get("quad_show_point_labels", True)
                 _quad_hidden_pairs = st.session_state.get("quad_hidden_label_pairs", [])
                 x_col = "ln(interest share+1) − median"
@@ -1309,6 +1388,15 @@ def main() -> None:
                 plot_show = plot_df.rename(
                     columns={"x_vs_median_log": x_col, "y_vs_median_log": y_col}
                 )
+                _row_keys_all = (
+                    plot_show[LEAF_COL].astype(str)
+                    + _QUAD_PAIR_KEY_SEP
+                    + plot_show[HEALTH_COL].astype(str)
+                )
+                _marker_hidden = frozenset(
+                    st.session_state.get(_QUAD_MARKER_HIDE_MS_KEY) or []
+                )
+                plot_show = plot_show[~_row_keys_all.isin(_marker_hidden)].copy()
                 _lbl_col = "quad_label_text"
                 _row_keys = (
                     plot_show[LEAF_COL].astype(str)
@@ -1329,84 +1417,119 @@ def main() -> None:
                     h: _HEALTH_INTEREST_LEGEND_COLORS[i % len(_HEALTH_INTEREST_LEGEND_COLORS)]
                     for i, h in enumerate(_hi_sorted)
                 }
-                fig_q = px.scatter(
-                    plot_show,
-                    x=x_col,
-                    y=y_col,
-                    size="REC_COUNT",
-                    color=HEALTH_COL,
-                    text=_lbl_col,
-                    custom_data=[
-                        LEAF_COL,
-                        HEALTH_COL,
-                        "REC_COUNT",
-                        "SHARE_WITHIN_HEALTH_INTEREST",
-                        "SHARE_WITHIN_LOWEST_TAXONOMY",
-                    ],
-                    color_discrete_map=_hi_color_map,
-                    category_orders={HEALTH_COL: _hi_sorted},
-                    labels={
-                        x_col: "Condition focus (vs typical on chart)",
-                        y_col: "Condition reliance (vs typical on chart)",
-                    },
-                    opacity=0.65,
+                st.caption(
+                    "**Hide markers:** select a point on the chart (Plotly’s point-selection tool), "
+                    "then the app reruns and removes that taxonomy × health interest pair. "
+                    "Use **Hide chart markers** in the expander below to bring pairs back."
                 )
-                fig_q.update_traces(
-                    mode="markers+text",
-                    textposition="top center",
-                    textfont=dict(family=FONT_FAMILY, size=9, color=CHART_TEXT),
-                    marker=dict(line=dict(width=0.5, color="DarkSlateGrey")),
-                    hovertemplate=(
-                        "Taxonomy: <b>%{customdata[0]}</b><br>"
-                        "Health interest: <b>%{customdata[1]}</b><br>"
-                        "Rec count: <b>%{customdata[2]:,.0f}</b><br>"
-                        "Share within health interest: <b>%{customdata[3]:.2f}%</b><br>"
-                        "Share within category: <b>%{customdata[4]:.2f}%</b><extra></extra>"
-                    ),
+                if plot_show.empty:
+                    st.warning(
+                        "All points in this view are hidden. Open the expander and remove pairs "
+                        "from **Hide chart markers** to show them again."
+                    )
+                else:
+                    fig_q = px.scatter(
+                        plot_show,
+                        x=x_col,
+                        y=y_col,
+                        size="REC_COUNT",
+                        color=HEALTH_COL,
+                        text=_lbl_col,
+                        custom_data=[
+                            LEAF_COL,
+                            HEALTH_COL,
+                            "REC_COUNT",
+                            "SHARE_WITHIN_HEALTH_INTEREST",
+                            "SHARE_WITHIN_LOWEST_TAXONOMY",
+                        ],
+                        color_discrete_map=_hi_color_map,
+                        category_orders={HEALTH_COL: _hi_sorted},
+                        labels={
+                            x_col: "Condition focus (vs typical on chart)",
+                            y_col: "Condition reliance (vs typical on chart)",
+                        },
+                        opacity=0.65,
+                    )
+                    fig_q.update_traces(
+                        mode="markers+text",
+                        textposition="top center",
+                        textfont=dict(family=FONT_FAMILY, size=9, color=CHART_TEXT),
+                        marker=dict(line=dict(width=0.5, color="DarkSlateGrey")),
+                        hovertemplate=(
+                            "Taxonomy: <b>%{customdata[0]}</b><br>"
+                            "Health interest: <b>%{customdata[1]}</b><br>"
+                            "Rec count: <b>%{customdata[2]:,.0f}</b><br>"
+                            "Share within health interest: <b>%{customdata[3]:.2f}%</b><br>"
+                            "Share within category: <b>%{customdata[4]:.2f}%</b><extra></extra>"
+                        ),
+                    )
+                    fig_q.add_hline(
+                        y=0,
+                        line_width=1.5,
+                        line_dash="solid",
+                        line_color=CHART_TEXT,
+                        opacity=0.55,
+                    )
+                    fig_q.add_vline(
+                        x=0,
+                        line_width=1.5,
+                        line_dash="solid",
+                        line_color=CHART_TEXT,
+                        opacity=0.55,
+                    )
+                    x_half = _quadrant_axis_half_from_series(
+                        plot_show[x_col],
+                        min_pts_pad=0.08,
+                        min_half=0.02,
+                    )
+                    y_half = _quadrant_axis_half_from_series(
+                        plot_show[y_col],
+                        min_pts_pad=0.08,
+                        min_half=0.02,
+                    )
+                    xr0, xr1 = -x_half, x_half
+                    yr0, yr1 = -y_half, y_half
+                    fig_q.update_layout(
+                        font=_plot_base_font(),
+                        hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
+                        height=720,
+                        margin=dict(l=96, r=96, t=100, b=100),
+                        annotations=_quadrant_label_annotations(),
+                        xaxis=dict(range=[xr0, xr1], zeroline=False),
+                        yaxis=dict(range=[yr0, yr1], zeroline=False),
+                        legend=dict(
+                            title=dict(text="Health interest"),
+                            font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+                        ),
+                    )
+                    fig_q.update_xaxes(tickfont=_tick_font(), title="")
+                    fig_q.update_yaxes(tickfont=_tick_font(), title="")
+                    st.plotly_chart(
+                        fig_q,
+                        key=_QUAD_PLOTLY_WIDGET_KEY,
+                        on_select="rerun",
+                        selection_mode="points",
+                        use_container_width=True,
+                    )
+                _marker_opts = sorted(
+                    set(_pair_keys) | set(st.session_state.get(_QUAD_MARKER_HIDE_MS_KEY) or [])
                 )
-                fig_q.add_hline(
-                    y=0,
-                    line_width=1.5,
-                    line_dash="solid",
-                    line_color=CHART_TEXT,
-                    opacity=0.55,
-                )
-                fig_q.add_vline(
-                    x=0,
-                    line_width=1.5,
-                    line_dash="solid",
-                    line_color=CHART_TEXT,
-                    opacity=0.55,
-                )
-                x_half = _quadrant_axis_half_from_series(
-                    plot_show[x_col],
-                    min_pts_pad=0.08,
-                    min_half=0.02,
-                )
-                y_half = _quadrant_axis_half_from_series(
-                    plot_show[y_col],
-                    min_pts_pad=0.08,
-                    min_half=0.02,
-                )
-                xr0, xr1 = -x_half, x_half
-                yr0, yr1 = -y_half, y_half
-                fig_q.update_layout(
-                    font=_plot_base_font(),
-                    hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
-                    height=720,
-                    margin=dict(l=96, r=96, t=100, b=100),
-                    annotations=_quadrant_label_annotations(),
-                    xaxis=dict(range=[xr0, xr1], zeroline=False),
-                    yaxis=dict(range=[yr0, yr1], zeroline=False),
-                    legend=dict(
-                        title=dict(text="Health interest"),
-                        font=dict(family=FONT_FAMILY, color=CHART_TEXT),
-                    ),
-                )
-                fig_q.update_xaxes(tickfont=_tick_font(), title="")
-                fig_q.update_yaxes(tickfont=_tick_font(), title="")
-                st.plotly_chart(fig_q, use_container_width=True)
-                with st.expander("Point labels", expanded=False):
+
+                def _quad_marker_label(k: str) -> str:
+                    if k in _pair_labels:
+                        return _pair_labels[k]
+                    parts = k.split(_QUAD_PAIR_KEY_SEP, 1)
+                    return f"{parts[0]} — {parts[1]}" if len(parts) == 2 else k
+
+                with st.expander("Point labels & chart markers", expanded=False):
+                    st.multiselect(
+                        "Hide chart markers (taxonomy × health interest)",
+                        options=_marker_opts,
+                        format_func=_quad_marker_label,
+                        key=_QUAD_MARKER_HIDE_MS_KEY,
+                        help="Selected pairs are removed from the scatter. "
+                        "Or select points on the chart (point tool) to add pairs here automatically.",
+                    )
                     st.caption(
                         "Turn names on or off, or hide specific taxonomy × health interest pairs. "
                         "Markers stay on the chart."
