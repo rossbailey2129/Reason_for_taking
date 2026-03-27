@@ -501,8 +501,77 @@ def _quadrant_axis_half_from_series(
     return _snap_symmetric_half_for_ticks(half, min_half=min_half)
 
 
-def _quadrant_label_annotations(x_half: float, y_half: float) -> list[dict]:
-    """Corner labels in data coordinates (x = condition / interest, y = category / taxonomy)."""
+def _quadrant_asinh_scale(centered: pd.Series) -> float:
+    """
+    Scale s (in percentage points) for arcsinh(u/s): smaller s spreads small |u| more.
+    Uses median |Δ| from the plotted slice, clamped so tiny medians don't explode the transform.
+    """
+    v = pd.to_numeric(centered, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    if v.empty:
+        return 2.0
+    abs_v = np.abs(v.astype(float))
+    med = float(np.median(abs_v))
+    if med <= 0:
+        med = float(np.max(abs_v)) * 0.1 or 0.5
+    return float(np.clip(med, 0.35, 12.0))
+
+
+def _quadrant_pct_to_asinh(u: np.ndarray | pd.Series, scale: float) -> np.ndarray:
+    return np.arcsinh(np.asarray(u, dtype=float) / scale)
+
+
+def _quadrant_symmetric_pct_tickvals(half_pct: float, scale: float) -> tuple[list[float], list[str]]:
+    """Axis tick positions in asinh space; labels show original % point deltas."""
+    half_pct = max(float(half_pct), 1e-6)
+    steps = [
+        0,
+        0.25,
+        0.5,
+        1,
+        1.5,
+        2,
+        3,
+        5,
+        7,
+        10,
+        15,
+        20,
+        30,
+        40,
+        50,
+        75,
+        100,
+        150,
+        200,
+    ]
+    cand = sorted({c for s in steps for c in (s, -s) if abs(c) <= half_pct + 1e-9})
+    if len(cand) > 17:
+        keep = {cand[0], cand[-1], 0.0}
+        idx = np.linspace(0, len(cand) - 1, 13, dtype=int)
+        keep.update(cand[i] for i in idx)
+        cand = sorted(keep)
+    tvals = [float(np.arcsinh(c / scale)) for c in cand]
+
+    def _lbl(c: float) -> str:
+        if abs(c) < 1e-9:
+            return "0"
+        a = abs(c)
+        if a >= 10:
+            return f"{c:.0f}"
+        if abs(c - round(c)) < 0.05:
+            return f"{c:.0f}"
+        return f"{c:g}"
+
+    return tvals, [_lbl(c) for c in cand]
+
+
+def _quadrant_label_annotations(
+    x_half: float,
+    y_half: float,
+    sx: float,
+    sy: float,
+) -> list[dict]:
+    """Corner labels in asinh-scaled data coordinates (x = condition, y = category)."""
     inset_x = 0.88
     inset_y = 0.88
     fs = 12
@@ -516,35 +585,42 @@ def _quadrant_label_annotations(x_half: float, y_half: float) -> list[dict]:
         bgcolor=bg,
         borderpad=4,
     )
+
+    def ax(u_pct: float) -> float:
+        return float(np.arcsinh(u_pct / sx))
+
+    def ay(v_pct: float) -> float:
+        return float(np.arcsinh(v_pct / sy))
+
     return [
         {
             **common,
-            "x": inset_x * x_half,
-            "y": inset_y * y_half,
+            "x": ax(inset_x * x_half),
+            "y": ay(inset_y * y_half),
             "xanchor": "right",
             "yanchor": "top",
             "text": "High Condition Specificity &<br>High Category Specificity",
         },
         {
             **common,
-            "x": -inset_x * x_half,
-            "y": inset_y * y_half,
+            "x": ax(-inset_x * x_half),
+            "y": ay(inset_y * y_half),
             "xanchor": "left",
             "yanchor": "top",
             "text": "Low Condition Specificity &<br>High Category Specificity",
         },
         {
             **common,
-            "x": -inset_x * x_half,
-            "y": -inset_y * y_half,
+            "x": ax(-inset_x * x_half),
+            "y": ay(-inset_y * y_half),
             "xanchor": "left",
             "yanchor": "bottom",
             "text": "Low Condition Specificity &<br>Low Category Specificity",
         },
         {
             **common,
-            "x": inset_x * x_half,
-            "y": -inset_y * y_half,
+            "x": ax(inset_x * x_half),
+            "y": ay(-inset_y * y_half),
             "xanchor": "right",
             "yanchor": "bottom",
             "text": "High Condition Specificity &<br>Low Category Specificity",
@@ -1187,6 +1263,8 @@ def main() -> None:
             "**X** = share within health interest; **Y** = share within lowest taxonomy. "
             "Each axis uses **raw shares (%)** shifted so **(0, 0)** is the **median** of the "
             "points shown (after filters, interest selection, and Top N taxonomies). "
+            "Axes use a **symmetric log–like scale** (arcsinh of Δ% / scale) so values near "
+            "the median stay readable; ordinary log cannot be used because deltas cross zero. "
             "Leave **Health interests** empty to include all interests in the slice."
         )
         tab_quad_df = _tab_exclude_expander("quadrant", filtered)
@@ -1241,6 +1319,16 @@ def main() -> None:
                 plot_show = plot_df.rename(
                     columns={"x_vs_median": x_col, "y_vs_median": y_col}
                 )
+                sx = _quadrant_asinh_scale(plot_show[x_col])
+                sy = _quadrant_asinh_scale(plot_show[y_col])
+                _qx = "_quad_x_asinh"
+                _qy = "_quad_y_asinh"
+                plot_show = plot_show.assign(
+                    **{
+                        _qx: _quadrant_pct_to_asinh(plot_show[x_col], sx),
+                        _qy: _quadrant_pct_to_asinh(plot_show[y_col], sy),
+                    }
+                )
                 hover_map_q: dict = {
                     LEAF_COL: True,
                     HEALTH_COL: True,
@@ -1252,22 +1340,35 @@ def main() -> None:
                 }
                 for c in hover_extra:
                     hover_map_q[c] = True
+                _cd_cols = [x_col, y_col, "REC_COUNT", *hover_extra]
                 fig_q = px.scatter(
                     plot_show,
-                    x=x_col,
-                    y=y_col,
+                    x=_qx,
+                    y=_qy,
                     size="REC_COUNT",
                     color=HEALTH_COL,
                     hover_name=LEAF_COL,
                     hover_data=hover_map_q,
+                    custom_data=_cd_cols,
                     labels={
-                        x_col: "Share within health interest − median (% pts)",
-                        y_col: "Share within lowest taxonomy − median (% pts)",
+                        _qx: f"Condition Δ vs median (asinh, s={sx:.2g} % pts)",
+                        _qy: f"Category Δ vs median (asinh, s={sy:.2g} % pts)",
                     },
                     opacity=0.72,
                 )
+                _ht_q = [
+                    "<b>%{hovertext}</b><br>",
+                    "%{fullData.name}<br>",
+                    "REC_COUNT=%{customdata[2]:,.0f}<br>",
+                    f"{x_col}=%{{customdata[0]:.2f}}<br>",
+                    f"{y_col}=%{{customdata[1]:.2f}}<br>",
+                ]
+                for _i, _c in enumerate(hover_extra):
+                    _ht_q.append(f"{_c}=%{{customdata[{_i + 3}]}}<br>")
+                _ht_q.append("<extra></extra>")
                 fig_q.update_traces(
-                    marker=dict(line=dict(width=0.5, color="DarkSlateGrey"))
+                    marker=dict(line=dict(width=0.5, color="DarkSlateGrey")),
+                    hovertemplate="".join(_ht_q),
                 )
                 fig_q.add_hline(
                     y=0,
@@ -1285,14 +1386,18 @@ def main() -> None:
                 )
                 x_half = _quadrant_axis_half_from_series(plot_show[x_col])
                 y_half = _quadrant_axis_half_from_series(plot_show[y_col])
-                xr0, xr1 = -x_half, x_half
-                yr0, yr1 = -y_half, y_half
+                xr0 = float(np.arcsinh(-x_half / sx))
+                xr1 = float(np.arcsinh(x_half / sx))
+                yr0 = float(np.arcsinh(-y_half / sy))
+                yr1 = float(np.arcsinh(y_half / sy))
+                x_tv, x_tt = _quadrant_symmetric_pct_tickvals(x_half, sx)
+                y_tv, y_tt = _quadrant_symmetric_pct_tickvals(y_half, sy)
                 fig_q.update_layout(
                     font=_plot_base_font(),
                     hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                     height=720,
                     margin=dict(l=72, r=72, t=88, b=72),
-                    annotations=_quadrant_label_annotations(x_half, y_half),
+                    annotations=_quadrant_label_annotations(x_half, y_half, sx, sy),
                     xaxis=dict(range=[xr0, xr1], zeroline=False),
                     yaxis=dict(range=[yr0, yr1], zeroline=False),
                     legend=dict(
@@ -1303,10 +1408,28 @@ def main() -> None:
                 fig_q.update_xaxes(
                     tickfont=_tick_font(),
                     title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+                    tickmode="array",
+                    tickvals=x_tv,
+                    ticktext=x_tt,
+                    title=dict(
+                        text=(
+                            "Share within health interest − median (% pts), "
+                            f"symmetric log (s={sx:.2g})"
+                        )
+                    ),
                 )
                 fig_q.update_yaxes(
                     tickfont=_tick_font(),
                     title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+                    tickmode="array",
+                    tickvals=y_tv,
+                    ticktext=y_tt,
+                    title=dict(
+                        text=(
+                            "Share within lowest taxonomy − median (% pts), "
+                            f"symmetric log (s={sy:.2g})"
+                        )
+                    ),
                 )
                 st.plotly_chart(fig_q, use_container_width=True)
 
