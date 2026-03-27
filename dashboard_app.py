@@ -5,6 +5,7 @@ Run: streamlit run dashboard_app.py
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -462,14 +463,39 @@ def _tab_exclude_expander(tab_id: str, base: pd.DataFrame) -> pd.DataFrame:
     return apply_tab_excludes(base, ex_leaves, ex_interests)
 
 
-def _symmetric_axis_range(
-    centered: pd.Series, *, min_half_span: float = 1.0, pad_frac: float = 0.12
-) -> tuple[float, float]:
-    """Symmetric [-M, M] around zero for median-centered percentage-point data."""
-    s = centered.astype(float)
-    half = max(abs(float(s.min())), abs(float(s.max())), min_half_span)
-    half *= 1.0 + pad_frac
-    return -half, half
+def _snap_symmetric_half_for_ticks(half: float, *, min_half: float = 1.0) -> float:
+    """Ceil half to a readable step (1s, then 5s, then 10s) without large jumps."""
+    half = max(float(half), min_half)
+    if half <= 5:
+        return float(max(min_half, math.ceil(half)))
+    if half < 100:
+        return float(max(min_half, math.ceil(half / 5.0) * 5.0))
+    step = 10.0
+    return float(max(min_half, math.ceil(half / step) * step))
+
+
+def _quadrant_symmetric_half_from_xy(
+    x: pd.Series,
+    y: pd.Series,
+    *,
+    pad_frac: float = 0.08,
+    min_half: float = 1.0,
+) -> float:
+    """
+    Single half-span for 1:1 quadrant axes from the points actually plotted:
+    max(|x|,|y|) over displayed values, padded, then snapped for clean tick marks.
+    """
+    xv = pd.to_numeric(x, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    yv = pd.to_numeric(y, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    if xv.empty and yv.empty:
+        return min_half
+    ext = 0.0
+    if not xv.empty:
+        ext = max(ext, abs(float(xv.min())), abs(float(xv.max())))
+    if not yv.empty:
+        ext = max(ext, abs(float(yv.min())), abs(float(yv.max())))
+    half = max(ext * (1.0 + pad_frac), min_half)
+    return _snap_symmetric_half_for_ticks(half, min_half=min_half)
 
 
 def _quadrant_plot_frame(
@@ -1203,9 +1229,7 @@ def main() -> None:
                     line_color=CHART_TEXT,
                     opacity=0.55,
                 )
-                xr0, xr1 = _symmetric_axis_range(plot_show[x_col])
-                yr0, yr1 = _symmetric_axis_range(plot_show[y_col])
-                half = max(abs(xr0), abs(xr1), abs(yr0), abs(yr1))
+                half = _quadrant_symmetric_half_from_xy(plot_show[x_col], plot_show[y_col])
                 xr0, xr1 = -half, half
                 yr0, yr1 = -half, half
                 fig_q.update_layout(
