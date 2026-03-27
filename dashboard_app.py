@@ -44,6 +44,53 @@ _QUAD_PAIR_KEY_SEP = "\x1f"
 
 BAR_FILL = "#e6f1fc"
 CHART_TEXT = "#36485c"
+# Health-interest legend: alternating hues (red vs green vs blue …), then lighter/darker repeats.
+_HEALTH_INTEREST_LEGEND_COLORS: tuple[str, ...] = (
+    "#c1121f",
+    "#2d6a4f",
+    "#1d4ed8",
+    "#d97706",
+    "#7c3aed",
+    "#0f766e",
+    "#b91c1c",
+    "#15803d",
+    "#2563eb",
+    "#c2410c",
+    "#6d28d9",
+    "#0e7490",
+    "#9f1239",
+    "#166534",
+    "#1e40af",
+    "#b45309",
+    "#5b21b6",
+    "#115e59",
+    "#be123c",
+    "#3f6212",
+    "#1e3a8a",
+    "#9a3412",
+    "#4c1d95",
+    "#134e4a",
+    "#e11d48",
+    "#65a30d",
+    "#93c5fd",
+    "#fca5a5",
+    "#86efac",
+    "#fcd34d",
+    "#d8b4fe",
+    "#5eead4",
+    "#fdba74",
+    "#fecdd3",
+    "#bbf7d0",
+    "#fde68a",
+    "#e9d5ff",
+    "#99f6e4",
+    "#7f1d1d",
+    "#14532d",
+    "#1e3a5f",
+    "#7c2d12",
+    "#3b0764",
+    "#164e63",
+)
 HEATMAP_COLORSCALE = "Blues"
 # Embedded heatmap viewport: larger values use more of the browser window before inner scroll.
 HEATMAP_EMBED_MAX_VIEWPORT_PX = 2000
@@ -1290,6 +1337,11 @@ def main() -> None:
                     )
                 else:
                     plot_show[_lbl_col] = ""
+                _hi_sorted = sorted(plot_show[HEALTH_COL].astype(str).unique())
+                _hi_color_map = {
+                    h: _HEALTH_INTEREST_LEGEND_COLORS[i % len(_HEALTH_INTEREST_LEGEND_COLORS)]
+                    for i, h in enumerate(_hi_sorted)
+                }
                 fig_q = px.scatter(
                     plot_show,
                     x=x_col,
@@ -1298,6 +1350,8 @@ def main() -> None:
                     color=HEALTH_COL,
                     text=_lbl_col,
                     custom_data=[LEAF_COL, HEALTH_COL],
+                    color_discrete_map=_hi_color_map,
+                    category_orders={HEALTH_COL: _hi_sorted},
                     labels={
                         x_col: "Condition focus (vs typical on chart)",
                         y_col: "Condition reliance (vs typical on chart)",
