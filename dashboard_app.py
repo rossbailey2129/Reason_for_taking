@@ -509,11 +509,10 @@ def _quadrant_point_label_annotations(
     max_chars: int = 30,
 ) -> list[dict]:
     """
-    Lowest-taxonomy labels relative to chart origin (0, 0): each label lies on the ray
-    from the origin through the point, on the **far** side of the marker from (0, 0).
-    Leader length varies **linearly** with a stable sort (polar angle, then distance from
-    origin) so neighboring directions get staggered radii; identical (x, y) stacks get an
-    extra length step.
+    Lowest-taxonomy labels on the line through (0, 0) and the point, **between** the
+    intercept and the marker. Plotly draws the arrow from text → point, so the leader
+    follows the same slope as (0,0)→(x,y) but points **away from the intercept** toward
+    the bubble. Length varies linearly by polar sort rank, plus rec-count and stack bumps.
     """
     n = len(plot_show)
     if n == 0:
@@ -547,8 +546,10 @@ def _quadrant_point_label_annotations(
             theta = (i * 2.3999632297286533) % (2.0 * math.pi)
         else:
             theta = math.atan2(yi, xi)
-        u_ax = math.cos(theta)
-        u_ay = -math.sin(theta)
+        # Pixel offset toward (0,0) from the marker: arrow (label→point) continues the
+        # ray from intercept through the point, visually opposing the origin.
+        u_ax = -math.cos(theta)
+        u_ay = math.sin(theta)
 
         rk = length_rank[i]
         if n <= 1:
@@ -1237,9 +1238,10 @@ def main() -> None:
                     f"Cohort medians (plotted points): "
                     f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**, "
                     f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**. "
-                    "**Point color** is health interest. Labels sit on the ray **from (0, 0) through "
-                    "each point** (opposite the origin from the bubble), with **linearly stepped** "
-                    "leader lengths to spread text."
+                    "**Point color** is health interest. Labels sit **between (0, 0) and each point** "
+                    "on the same line, so leaders run **from the label toward the bubble**, away from "
+                    "the intercept; lengths step **linearly** by angle/distance sort (plus rec count "
+                    "and stacked points)."
                 )
                 plot_show = plot_df.rename(
                     columns={
