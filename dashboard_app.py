@@ -880,7 +880,7 @@ def main() -> None:
             "By lowest taxonomy",
             "By health interest",
             "Heatmap (top pairs)",
-            "Specificity & confidence",
+            "Condition focus VS Condition reliance",
         ]
     )
 
@@ -1192,13 +1192,12 @@ def main() -> None:
             _show_plotly_figure_scrollable(fig_hm)
 
     with tab_quadrant:
-        st.subheader("Specificity and confidence (log + median-centered)")
+        st.subheader("Condition focus VS Condition reliance")
         st.caption(
-            "**X** / **Y** use **precomputed** shares from the file. Each share **x** is mapped "
-            "with **x′ = ln(x+1)** (natural log), then the axis value is **x′ minus the median "
-            "of x′** among plotted points (same for **y**). **(0, 0)** is that **log-space** "
-            "median. Axes are **linear** in those centered log units. "
-            "Leave **Health interests** empty to include all interests in the slice."
+            "**Horizontal:** how much the pair sits within its **health interest**. "
+            "**Vertical:** how much it sits within its **product category** (lowest taxonomy). "
+            "**(0, 0)** is what’s typical among the points on this chart. "
+            "Leave **Health interests** empty to use every interest in the current slice."
         )
         tab_quad_df = _tab_exclude_expander("quadrant", filtered)
         if tab_quad_df.empty:
@@ -1242,10 +1241,8 @@ def main() -> None:
                 st.info("No rows for this selection after filters.")
             else:
                 st.caption(
-                    f"**Raw share medians (among plotted points, %):** "
-                    f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**, "
-                    f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**. "
-                    "Chart origin uses **median of ln(share+1)** per axis, not these raw medians."
+                    f"**Typical raw shares** for this plot (%, file values): "
+                    f"within interest **{med_hi:.2f}**, within category **{med_lt:.2f}**."
                 )
                 _pair_rows = (
                     plot_df[[LEAF_COL, HEALTH_COL]]
@@ -1302,8 +1299,8 @@ def main() -> None:
                     text=_lbl_col,
                     custom_data=[LEAF_COL, HEALTH_COL],
                     labels={
-                        x_col: "ln(share within health interest + 1) − cohort median",
-                        y_col: "ln(share within lowest taxonomy + 1) − cohort median",
+                        x_col: "Condition focus (vs typical on chart)",
+                        y_col: "Condition reliance (vs typical on chart)",
                     },
                     opacity=0.65,
                 )
