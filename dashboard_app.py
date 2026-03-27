@@ -40,6 +40,7 @@ SHARE_COLS = frozenset(
 _SHARE_UI_VERSION = 2
 # Quadrant tab: Top N widget session key (fresh key avoids stale “all taxa” values).
 _QUADRANT_TOP_N_KEY = "quad_top_n_chart"
+_QUAD_PAIR_KEY_SEP = "\x1f"
 
 BAR_FILL = "#e6f1fc"
 CHART_TEXT = "#36485c"
@@ -1246,37 +1247,49 @@ def main() -> None:
                     f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**. "
                     "Chart origin uses **median of ln(share+1)** per axis, not these raw medians."
                 )
-                _quad_rec_max = max(1, int(plot_df["REC_COUNT"].max()))
-                _c1, _c2 = st.columns(2)
-                with _c1:
-                    _quad_show_lbl = st.checkbox(
-                        "Show point labels (lowest taxonomy)",
-                        value=True,
-                        key="quad_show_point_labels",
-                    )
-                with _c2:
-                    _quad_min_rec_lbl = st.number_input(
-                        "Min recommendation count to show a label",
-                        min_value=0,
-                        max_value=_quad_rec_max,
-                        value=1,
-                        step=1,
-                        key="quad_min_rec_for_label",
-                        disabled=not _quad_show_lbl,
-                        help="When labels are on, rows below this count get no text (marker only).",
-                    )
+                _pair_rows = (
+                    plot_df[[LEAF_COL, HEALTH_COL]]
+                    .drop_duplicates()
+                    .sort_values([LEAF_COL, HEALTH_COL], kind="mergesort")
+                )
+                _pair_keys: list[str] = []
+                _pair_labels: dict[str, str] = {}
+                for _, _pr in _pair_rows.iterrows():
+                    _pk = f"{_pr[LEAF_COL]}{_QUAD_PAIR_KEY_SEP}{_pr[HEALTH_COL]}"
+                    _pair_keys.append(_pk)
+                    _pair_labels[_pk] = f"{_pr[LEAF_COL]} — {_pr[HEALTH_COL]}"
+                _quad_show_lbl = st.checkbox(
+                    "Show point labels (lowest taxonomy)",
+                    value=True,
+                    key="quad_show_point_labels",
+                )
+                _quad_hidden_pairs = st.multiselect(
+                    "Hide labels for these taxonomy × health interest pairs",
+                    options=_pair_keys,
+                    format_func=lambda k: _pair_labels[k],
+                    default=[],
+                    key="quad_hidden_label_pairs",
+                    disabled=not _quad_show_lbl,
+                    help="Select pairs to drop the text label only; the marker stays. "
+                    "Options match the current plotted slice.",
+                )
                 x_col = "ln(interest share+1) − median"
                 y_col = "ln(taxonomy share+1) − median"
                 plot_show = plot_df.rename(
                     columns={"x_vs_median_log": x_col, "y_vs_median_log": y_col}
                 )
                 _lbl_col = "quad_label_text"
-                _rc = plot_show["REC_COUNT"].astype(float)
+                _row_keys = (
+                    plot_show[LEAF_COL].astype(str)
+                    + _QUAD_PAIR_KEY_SEP
+                    + plot_show[HEALTH_COL].astype(str)
+                )
+                _hidden_set = frozenset(_quad_hidden_pairs)
                 if _quad_show_lbl:
                     plot_show[_lbl_col] = np.where(
-                        _rc >= float(_quad_min_rec_lbl),
-                        plot_show[LEAF_COL].astype(str),
+                        _row_keys.isin(_hidden_set),
                         "",
+                        plot_show[LEAF_COL].astype(str),
                     )
                 else:
                     plot_show[_lbl_col] = ""
