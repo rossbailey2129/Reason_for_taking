@@ -513,42 +513,89 @@ _QUADRANT_LABEL_OCTANTS: tuple[tuple[int, int], ...] = (
     (-1, 1),
     (-1, 0),
 )
+# Maps 45° bin (from atan2, +22.5) -> octant index matching _QUADRANT_LABEL_OCTANTS.
+_BIN_TO_OCTANT: tuple[int, ...] = (3, 2, 1, 0, 7, 6, 5, 4)
 
 
-def _octant_leader_radius_px(local_neighbors: int, n_total: int) -> float:
-    """Pixel distance from marker to label; far enough that text clears bubble glyphs."""
+def _preferred_octant_outward(dx: float, dy: float) -> int:
+    """Octant that best matches vector (dx, dy) in data space (+y up)."""
+    if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+        return 3
+    ang = math.degrees(math.atan2(dy, dx))
+    a = (ang + 360.0) % 360.0
+    b = int((a + 22.5) // 45.0) % 8
+    return _BIN_TO_OCTANT[b]
+
+
+def _local_centroids(xs: np.ndarray, ys: np.ndarray, band: float) -> tuple[np.ndarray, np.ndarray]:
+    """Per-point mean position of all points within ``band`` (data units)."""
+    n = len(xs)
+    b2 = band * band
+    lcx = np.zeros(n, dtype=float)
+    lcy = np.zeros(n, dtype=float)
+    for i in range(n):
+        m = (xs - xs[i]) ** 2 + (ys - ys[i]) ** 2 <= b2
+        lcx[i] = float(np.mean(xs[m]))
+        lcy[i] = float(np.mean(ys[m]))
+    return lcx, lcy
+
+
+def _octant_leader_radius_px(
+    local_neighbors: int,
+    n_total: int,
+    *,
+    rec_norm: float,
+) -> float:
+    """
+    Pixel distance marker → label: scales with crowding, chart size, and bubble size
+    (rec_norm in [0,1] vs largest REC_COUNT in frame).
+    """
     d = max(0, int(local_neighbors))
-    r = 34.0 + 3.2 * min(d, 12)
-    if n_total > 55:
-        r += 4.0
-    if n_total > 80:
-        r += 4.0
-    return float(min(72.0, r))
+    r = 42.0 + 4.2 * min(d, 14)
+    r *= 1.0 + 0.065 * min(d, 16)
+    if n_total > 40:
+        r += 6.0
+    if n_total > 65:
+        r += 7.0
+    if n_total > 90:
+        r += 6.0
+    r += 8.0 * rec_norm + 10.0 * (rec_norm**1.35)
+    return float(min(108.0, r))
 
 
 def _assign_octant_slots(
     xs: np.ndarray,
     ys: np.ndarray,
+    lcx: np.ndarray,
+    lcy: np.ndarray,
     *,
-    conflict_band: float = 5.5,
+    conflict_band: float = 7.25,
 ) -> list[int]:
     """
-    Eight compass slots around each marker (cycled by index). Neighbors within
-    ``conflict_band`` (data units) avoid reusing an octant already taken.
+    Prefer the octant that points **from the local cluster centroid** through the
+    marker so leaders radiate outward instead of crossing the dense core. Among
+    neighbors within ``conflict_band``, avoid reusing an octant; search order tries
+    near directions before opposites to reduce line fan-out clashes.
     """
     n = len(xs)
     slots: list[int] = []
     b2 = conflict_band**2
+    try_offsets = (0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7)
     for idx in range(n):
-        preferred = (idx * 3) % 8
-        taken: set[int] = set()
         xi, yi = float(xs[idx]), float(ys[idx])
+        dx = xi - float(lcx[idx])
+        dy = yi - float(lcy[idx])
+        if dx * dx + dy * dy < 1e-8:
+            preferred = (idx * 5) % 8
+        else:
+            preferred = _preferred_octant_outward(dx, dy)
+        taken: set[int] = set()
         for j in range(idx):
             if (xs[j] - xi) ** 2 + (ys[j] - yi) ** 2 <= b2:
                 taken.add(slots[j])
         chosen = preferred
-        for k in range(8):
-            cand = (preferred + k) % 8
+        for off in try_offsets:
+            cand = (preferred + off) % 8
             if cand not in taken:
                 chosen = cand
                 break
@@ -566,29 +613,37 @@ def _quadrant_leader_label_annotations(
     """
     Taxonomy-only labels (health interest = point color).
 
-    Each label uses one of eight positions around its bubble (NW, N, NE, E, SE, S,
-    SW, W) with a short leader. Octants rotate by row order; close neighbors pick
-    different slots when possible.
+    Octants aim **outward from each point’s local neighborhood centroid** so leaders
+    tend to leave dense clumps instead of crossing them; nearby points take different
+    octants when possible. Leader length grows with crowding and bubble size.
     """
     n = len(plot_show)
     if n == 0:
         return []
     xs = plot_show[dx_col].astype(float).to_numpy()
     ys = plot_show[dy_col].astype(float).to_numpy()
+    rc = plot_show["REC_COUNT"].astype(float).to_numpy()
+    rc_max = float(np.nanmax(rc)) if n else 1.0
+    if rc_max <= 0:
+        rc_max = 1.0
+    lcx, lcy = _local_centroids(xs, ys, 11.0)
     neigh_band = 6.0
     neigh_sq = neigh_band**2
     densities: list[int] = []
     for i in range(n):
         d2 = (xs - xs[i]) ** 2 + (ys - ys[i]) ** 2
         densities.append(int(np.sum(d2 <= neigh_sq)) - 1)
-    oct_slots = _assign_octant_slots(xs, ys)
+    oct_slots = _assign_octant_slots(xs, ys, lcx, lcy)
     fs = int(max(7, min(10, 14 - n // 8)))
     mchars = max(20, min(max_chars, 40 - n // 5))
     out: list[dict] = []
     for idx, (_, row) in enumerate(plot_show.iterrows()):
         xi, yi = float(row[dx_col]), float(row[dy_col])
         dens = max(0, densities[idx])
-        r = _octant_leader_radius_px(dens, n)
+        rec_norm = float(rc[idx]) / rc_max
+        r = _octant_leader_radius_px(dens, n, rec_norm=rec_norm)
+        if dens >= 10:
+            r = min(108.0, r * 1.08)
         du, dv = _QUADRANT_LABEL_OCTANTS[oct_slots[idx]]
         ln = math.hypot(float(du), float(dv))
         ax_pix = int(r * du / ln)
@@ -1271,8 +1326,9 @@ def main() -> None:
                     f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**, "
                     f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**. "
                     "Labels are **lowest taxonomy** only; **point color** is health interest. "
-                    "Each label sits on one of eight compass positions around its bubble "
-                    "(short leader), rotating around the chart so neighbors use different sides."
+                    "Labels sit on eight compass sides with distance scaled to crowding and "
+                    "bubble size; direction favors **outward from local clusters** so lines "
+                    "cross the dense core less, and neighbors avoid the same side when possible."
                 )
                 plot_show = plot_df.rename(
                     columns={
