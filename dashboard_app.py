@@ -540,15 +540,53 @@ def _local_centroids(xs: np.ndarray, ys: np.ndarray, band: float) -> tuple[np.nd
     return lcx, lcy
 
 
+def _inner_depth_ranks(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    lcx: np.ndarray,
+    lcy: np.ndarray,
+    wide: float = 15.0,
+) -> np.ndarray:
+    """
+    Among points within ``wide`` data units of each point, rank by distance to that
+    point's local centroid (0 = deepest inside the blob). Used to push inner labels
+    farther out.
+    """
+    n = len(xs)
+    w2 = wide * wide
+    ranks = np.zeros(n, dtype=int)
+    for i in range(n):
+        mask = (xs - xs[i]) ** 2 + (ys - ys[i]) ** 2 <= w2
+        idxs = np.flatnonzero(mask)
+        dcent = (xs[idxs] - lcx[i]) ** 2 + (ys[idxs] - lcy[i]) ** 2
+        order = idxs[np.argsort(dcent)]
+        ranks[i] = int(np.flatnonzero(order == i)[0])
+    return ranks
+
+
+def _coord_stack_indices(xs: np.ndarray, ys: np.ndarray, nd: int = 2) -> np.ndarray:
+    """0,1,2,... for identical rounded (x,y) so stacked points get staggered radius."""
+    n = len(xs)
+    ctr: dict[tuple[float, float], int] = {}
+    out = np.zeros(n, dtype=int)
+    for i in range(n):
+        k = (round(float(xs[i]), nd), round(float(ys[i]), nd))
+        out[i] = ctr.get(k, 0)
+        ctr[k] = ctr.get(k, 0) + 1
+    return out
+
+
 def _octant_leader_radius_px(
     local_neighbors: int,
     n_total: int,
     *,
     rec_norm: float,
+    inner_depth: int,
+    coord_stack: int,
 ) -> float:
     """
-    Pixel distance marker → label: scales with crowding, chart size, and bubble size
-    (rec_norm in [0,1] vs largest REC_COUNT in frame).
+    Pixel distance marker → label: crowding, bubble size, depth inside a dense blob,
+    and duplicate-coordinate stack offset.
     """
     d = max(0, int(local_neighbors))
     r = 42.0 + 4.2 * min(d, 14)
@@ -560,7 +598,13 @@ def _octant_leader_radius_px(
     if n_total > 90:
         r += 6.0
     r += 8.0 * rec_norm + 10.0 * (rec_norm**1.35)
-    return float(min(108.0, r))
+    r *= 1.0 + 0.125 * min(int(inner_depth), 22)
+    if d >= 11:
+        r *= 1.0 + 0.045 * min(d - 11, 14)
+    if d >= 16:
+        r *= 1.06
+    r += 24.0 * int(coord_stack)
+    return float(min(132.0, r))
 
 
 def _assign_octant_slots(
@@ -568,20 +612,22 @@ def _assign_octant_slots(
     ys: np.ndarray,
     lcx: np.ndarray,
     lcy: np.ndarray,
-    *,
-    conflict_band: float = 7.25,
+    densities: list[int],
 ) -> list[int]:
     """
-    Prefer the octant that points **from the local cluster centroid** through the
-    marker so leaders radiate outward instead of crossing the dense core. Among
-    neighbors within ``conflict_band``, avoid reusing an octant; search order tries
-    near directions before opposites to reduce line fan-out clashes.
+    Assign octants **outside-in** (points farthest from the global median first) so
+    the shell of a dense cluster claims directions before the core. Per-point
+    conflict radius grows with local density. Outward-from-local-centroid preferred.
     """
     n = len(xs)
-    slots: list[int] = []
-    b2 = conflict_band**2
+    gx = float(np.median(xs))
+    gy = float(np.median(ys))
+    dist_med = (xs - gx) ** 2 + (ys - gy) ** 2
+    process_order = sorted(range(n), key=lambda i: float(dist_med[i]), reverse=True)
     try_offsets = (0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7)
-    for idx in range(n):
+    slots = [0] * n
+    assigned: dict[int, int] = {}
+    for idx in process_order:
         xi, yi = float(xs[idx]), float(ys[idx])
         dx = xi - float(lcx[idx])
         dy = yi - float(lcy[idx])
@@ -589,17 +635,21 @@ def _assign_octant_slots(
             preferred = (idx * 5) % 8
         else:
             preferred = _preferred_octant_outward(dx, dy)
+        dens_i = max(0, densities[idx])
+        cb = 6.4 + 0.62 * min(dens_i, 20)
+        b2 = cb * cb
         taken: set[int] = set()
-        for j in range(idx):
+        for j, sj in assigned.items():
             if (xs[j] - xi) ** 2 + (ys[j] - yi) ** 2 <= b2:
-                taken.add(slots[j])
+                taken.add(sj)
         chosen = preferred
         for off in try_offsets:
             cand = (preferred + off) % 8
             if cand not in taken:
                 chosen = cand
                 break
-        slots.append(chosen)
+        slots[idx] = chosen
+        assigned[idx] = chosen
     return slots
 
 
@@ -613,9 +663,10 @@ def _quadrant_leader_label_annotations(
     """
     Taxonomy-only labels (health interest = point color).
 
-    Octants aim **outward from each point’s local neighborhood centroid** so leaders
-    tend to leave dense clumps instead of crossing them; nearby points take different
-    octants when possible. Leader length grows with crowding and bubble size.
+    Octants aim outward from each local centroid; **outside-in** assignment (farther
+    from the chart median first) reserves directions for the shell before the core.
+    Inner blobs get longer leaders, duplicate (x,y) stacks stagger, and dense areas use
+    smaller/shorter text.
     """
     n = len(plot_show)
     if n == 0:
@@ -627,13 +678,15 @@ def _quadrant_leader_label_annotations(
     if rc_max <= 0:
         rc_max = 1.0
     lcx, lcy = _local_centroids(xs, ys, 11.0)
+    depth = _inner_depth_ranks(xs, ys, lcx, lcy, wide=15.0)
+    stack_ix = _coord_stack_indices(xs, ys, nd=2)
     neigh_band = 6.0
     neigh_sq = neigh_band**2
     densities: list[int] = []
     for i in range(n):
         d2 = (xs - xs[i]) ** 2 + (ys - ys[i]) ** 2
         densities.append(int(np.sum(d2 <= neigh_sq)) - 1)
-    oct_slots = _assign_octant_slots(xs, ys, lcx, lcy)
+    oct_slots = _assign_octant_slots(xs, ys, lcx, lcy, densities)
     fs = int(max(7, min(10, 14 - n // 8)))
     mchars = max(20, min(max_chars, 40 - n // 5))
     out: list[dict] = []
@@ -641,15 +694,21 @@ def _quadrant_leader_label_annotations(
         xi, yi = float(row[dx_col]), float(row[dy_col])
         dens = max(0, densities[idx])
         rec_norm = float(rc[idx]) / rc_max
-        r = _octant_leader_radius_px(dens, n, rec_norm=rec_norm)
-        if dens >= 10:
-            r = min(108.0, r * 1.08)
+        r = _octant_leader_radius_px(
+            dens,
+            n,
+            rec_norm=rec_norm,
+            inner_depth=int(depth[idx]),
+            coord_stack=int(stack_ix[idx]),
+        )
         du, dv = _QUADRANT_LABEL_OCTANTS[oct_slots[idx]]
         ln = math.hypot(float(du), float(dv))
         ax_pix = int(r * du / ln)
         ay_pix = int(r * dv / ln)
         leaf = str(row[LEAF_COL])
-        combo = leaf if len(leaf) <= mchars else leaf[: mchars - 1] + "…"
+        fs_i = max(6, fs - min(3, max(0, dens - 5) // 4))
+        mc_i = max(14, mchars - min(10, dens // 3))
+        combo = leaf if len(leaf) <= mc_i else leaf[: mc_i - 1] + "…"
         out.append(
             {
                 "x": xi,
@@ -666,7 +725,7 @@ def _quadrant_leader_label_annotations(
                 "ayref": "pixel",
                 "ax": ax_pix,
                 "ay": ay_pix,
-                "font": dict(family=FONT_FAMILY, size=fs, color=CHART_TEXT),
+                "font": dict(family=FONT_FAMILY, size=fs_i, color=CHART_TEXT),
                 "align": "center",
                 "bgcolor": "rgba(255,255,255,0.78)",
                 "borderwidth": 0,
@@ -1326,9 +1385,10 @@ def main() -> None:
                     f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**, "
                     f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**. "
                     "Labels are **lowest taxonomy** only; **point color** is health interest. "
-                    "Labels sit on eight compass sides with distance scaled to crowding and "
-                    "bubble size; direction favors **outward from local clusters** so lines "
-                    "cross the dense core less, and neighbors avoid the same side when possible."
+                    "Labels use eight compass sides with distance scaled to crowding, bubble "
+                    "size, and depth inside a tight cluster; octants are chosen **outside-in** "
+                    "(shell before core). Identical positions stack with extra offset; dense "
+                    "areas use shorter text."
                 )
                 plot_show = plot_df.rename(
                     columns={
