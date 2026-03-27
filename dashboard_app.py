@@ -553,40 +553,6 @@ def _quadrant_label_annotations() -> list[dict]:
     ]
 
 
-def _quadrant_top_labels_by_quadrant_distance(
-    ps: pd.DataFrame,
-    x_col: str,
-    y_col: str,
-    *,
-    top_per_quadrant: int = 5,
-) -> pd.DataFrame:
-    """
-    Add ``quad_label``: lowest-taxonomy name for the ``top_per_quadrant`` points farthest
-    from (0, 0) in **each** of the four axis quadrants; others get an empty string.
-    Quadrants: TR x≥0,y≥0; TL x<0,y≥0; BL x<0,y<0; BR x≥0,y<0.
-    """
-    out = ps.copy()
-    xv = out[x_col].astype(float)
-    yv = out[y_col].astype(float)
-    dist = np.sqrt(xv * xv + yv * yv)
-    out["quad_label"] = ""
-    masks = (
-        (xv >= 0) & (yv >= 0),
-        (xv < 0) & (yv >= 0),
-        (xv < 0) & (yv < 0),
-        (xv >= 0) & (yv < 0),
-    )
-    for mask in masks:
-        sub = out.loc[mask]
-        if sub.empty:
-            continue
-        ranked = sub.assign(_qdist=dist.loc[sub.index]).nlargest(
-            min(top_per_quadrant, len(sub)), "_qdist"
-        )
-        out.loc[ranked.index, "quad_label"] = ranked[LEAF_COL].astype(str)
-    return out
-
-
 def _quadrant_plot_frame(
     df: pd.DataFrame,
     selected_interests: list[str],
@@ -1278,25 +1244,49 @@ def main() -> None:
                     f"**Raw share medians (among plotted points, %):** "
                     f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**, "
                     f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**. "
-                    "Chart origin uses **median of ln(share+1)** per axis, not these raw medians. "
-                    "**Labels:** up to **5** per quadrant — farthest from **(0, 0)** by Euclidean "
-                    "distance in the chart coordinates."
+                    "Chart origin uses **median of ln(share+1)** per axis, not these raw medians."
                 )
+                _quad_rec_max = max(1, int(plot_df["REC_COUNT"].max()))
+                _c1, _c2 = st.columns(2)
+                with _c1:
+                    _quad_show_lbl = st.checkbox(
+                        "Show point labels (lowest taxonomy)",
+                        value=True,
+                        key="quad_show_point_labels",
+                    )
+                with _c2:
+                    _quad_min_rec_lbl = st.number_input(
+                        "Min recommendation count to show a label",
+                        min_value=0,
+                        max_value=_quad_rec_max,
+                        value=1,
+                        step=1,
+                        key="quad_min_rec_for_label",
+                        disabled=not _quad_show_lbl,
+                        help="When labels are on, rows below this count get no text (marker only).",
+                    )
                 x_col = "ln(interest share+1) − median"
                 y_col = "ln(taxonomy share+1) − median"
                 plot_show = plot_df.rename(
                     columns={"x_vs_median_log": x_col, "y_vs_median_log": y_col}
                 )
-                plot_show = _quadrant_top_labels_by_quadrant_distance(
-                    plot_show, x_col, y_col, top_per_quadrant=5
-                )
+                _lbl_col = "quad_label_text"
+                _rc = plot_show["REC_COUNT"].astype(float)
+                if _quad_show_lbl:
+                    plot_show[_lbl_col] = np.where(
+                        _rc >= float(_quad_min_rec_lbl),
+                        plot_show[LEAF_COL].astype(str),
+                        "",
+                    )
+                else:
+                    plot_show[_lbl_col] = ""
                 fig_q = px.scatter(
                     plot_show,
                     x=x_col,
                     y=y_col,
                     size="REC_COUNT",
                     color=HEALTH_COL,
-                    text="quad_label",
+                    text=_lbl_col,
                     hover_name=LEAF_COL,
                     labels={
                         x_col: "ln(share within health interest + 1) − cohort median",
