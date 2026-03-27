@@ -474,27 +474,30 @@ def _snap_symmetric_half_for_ticks(half: float, *, min_half: float = 1.0) -> flo
     return float(max(min_half, math.ceil(half / step) * step))
 
 
-def _quadrant_symmetric_half_from_xy(
-    x: pd.Series,
-    y: pd.Series,
+def _quadrant_axis_half_from_series(
+    centered: pd.Series,
     *,
     pad_frac: float = 0.08,
+    min_pts_pad: float = 10.0,
     min_half: float = 1.0,
 ) -> float:
     """
-    Single half-span for 1:1 quadrant axes from the points actually plotted:
-    max(|x|,|y|) over displayed values, padded, then snapped for clean tick marks.
+    Symmetric half-range for one quadrant axis from the **plotted** median-centered
+    values only (same rows as the scatter). Uses max(|min|, |max|), then the larger of
+    proportional pad and ``min_pts_pad`` extra percentage points (e.g. 25→~35, 40→~50),
+    then tick-friendly snapping.
     """
-    xv = pd.to_numeric(x, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-    yv = pd.to_numeric(y, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-    if xv.empty and yv.empty:
+    v = pd.to_numeric(centered, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    if v.empty:
         return min_half
-    ext = 0.0
-    if not xv.empty:
-        ext = max(ext, abs(float(xv.min())), abs(float(xv.max())))
-    if not yv.empty:
-        ext = max(ext, abs(float(yv.min())), abs(float(yv.max())))
-    half = max(ext * (1.0 + pad_frac), min_half)
+    ext = max(abs(float(v.min())), abs(float(v.max())))
+    if ext == 0:
+        return max(min_half, 1.0)
+    half = max(
+        ext * (1.0 + pad_frac),
+        ext + min_pts_pad,
+        min_half,
+    )
     return _snap_symmetric_half_for_ticks(half, min_half=min_half)
 
 
@@ -1229,21 +1232,17 @@ def main() -> None:
                     line_color=CHART_TEXT,
                     opacity=0.55,
                 )
-                half = _quadrant_symmetric_half_from_xy(plot_show[x_col], plot_show[y_col])
-                xr0, xr1 = -half, half
-                yr0, yr1 = -half, half
+                x_half = _quadrant_axis_half_from_series(plot_show[x_col])
+                y_half = _quadrant_axis_half_from_series(plot_show[y_col])
+                xr0, xr1 = -x_half, x_half
+                yr0, yr1 = -y_half, y_half
                 fig_q.update_layout(
                     font=_plot_base_font(),
                     hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                     height=720,
                     margin=dict(l=72, r=72, t=88, b=72),
                     xaxis=dict(range=[xr0, xr1], zeroline=False),
-                    yaxis=dict(
-                        range=[yr0, yr1],
-                        zeroline=False,
-                        scaleanchor="x",
-                        scaleratio=1,
-                    ),
+                    yaxis=dict(range=[yr0, yr1], zeroline=False),
                     legend=dict(
                         title=dict(text="Health interest"),
                         font=dict(family=FONT_FAMILY, color=CHART_TEXT),
