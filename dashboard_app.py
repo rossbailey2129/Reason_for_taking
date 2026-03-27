@@ -509,32 +509,66 @@ def _quadrant_leader_label_annotations(
     max_chars: int = 34,
 ) -> list[dict]:
     """
-    One annotation per point: label with arrow from label to marker (pixel offset
-    fans around the point to reduce overlap).
+    Labels with leader lines to each point. Placement reduces overlap by:
+    (1) offset direction = outward from chart origin (0,0) through the point when
+        far enough from the origin (spreads radially instead of piling on one side);
+    (2) golden-angle directions for points very close to the origin;
+    (3) longer leaders where many neighbors fall within a small data-radius.
     """
     n = len(plot_show)
     if n == 0:
         return []
     multi_hi = int(plot_show[HEALTH_COL].nunique()) > 1
-    base_r = float(min(88.0, max(40.0, 560.0 / max(n, 1))))
-    fs = int(max(8, min(11, 15 - n // 10)))
+    xs = plot_show[dx_col].astype(float).to_numpy()
+    ys = plot_show[dy_col].astype(float).to_numpy()
+    # Neighbor density in median-centered %pt space (same units as axes).
+    neigh_band = 7.0
+    neigh_sq = neigh_band**2
+    densities: list[int] = []
+    for i in range(n):
+        d2 = (xs - xs[i]) ** 2 + (ys - ys[i]) ** 2
+        densities.append(int(np.sum(d2 <= neigh_sq)) - 1)
+    # Base leader length (px); longer when many points or tight clusters.
+    r0 = float(max(64.0, min(168.0, 620.0 / math.sqrt(max(n, 1)))))
+    fs = int(max(7, min(10, 14 - n // 8)))
+    mchars = max(22, min(max_chars, 36 - n // 6))
+    borderpad = 2 if n > 28 else 3
+    golden = math.pi * (3.0 - math.sqrt(5.0))
+    origin_eps = 0.45
     out: list[dict] = []
     for idx, (_, row) in enumerate(plot_show.iterrows()):
-        ang = 2 * math.pi * (idx + 0.41) / max(n, 1)
-        ax_pix = int(base_r * math.cos(ang))
-        ay_pix = int(-base_r * math.sin(ang))
+        xi, yi = float(row[dx_col]), float(row[dy_col])
+        h = math.hypot(xi, yi)
+        if h >= origin_eps:
+            ux, uy = xi / h, yi / h
+        else:
+            th = (idx + 0.318) * golden
+            ux, uy = math.cos(th), math.sin(th)
+        dens = max(0, densities[idx])
+        # Spread labels that share nearly the same outward ray (same quadrant wedge).
+        if h >= origin_eps and dens >= 3:
+            px, py = -uy, ux
+            wobble = 0.42 * math.sin(1.19 * idx + 0.31 * dens)
+            ux, uy = ux + wobble * px, uy + wobble * py
+            nh = math.hypot(ux, uy) or 1.0
+            ux, uy = ux / nh, uy / nh
+        stretch = 1.0 + 0.14 * min(dens, 12) + (0.22 if dens >= 6 else 0.0)
+        ring = 1.0 + 0.12 * (idx % 3) if dens >= 5 else 1.0
+        r = r0 * stretch * ring
+        ax_pix = int(r * ux)
+        ay_pix = int(-r * uy)
         leaf = str(row[LEAF_COL])
         if multi_hi:
             hi = str(row[HEALTH_COL])
             combo = f"{leaf} · {hi}"
         else:
             combo = leaf
-        if len(combo) > max_chars:
-            combo = combo[: max_chars - 1] + "…"
+        if len(combo) > mchars:
+            combo = combo[: mchars - 1] + "…"
         out.append(
             {
-                "x": float(row[dx_col]),
-                "y": float(row[dy_col]),
+                "x": xi,
+                "y": yi,
                 "xref": "x",
                 "yref": "y",
                 "text": combo,
@@ -549,10 +583,10 @@ def _quadrant_leader_label_annotations(
                 "ay": ay_pix,
                 "font": dict(family=FONT_FAMILY, size=fs, color=CHART_TEXT),
                 "align": "center",
-                "bgcolor": "rgba(255,255,255,0.88)",
+                "bgcolor": "rgba(255,255,255,0.82)",
                 "bordercolor": CHART_TEXT,
                 "borderwidth": 1,
-                "borderpad": 3,
+                "borderpad": borderpad,
             }
         )
     return out
