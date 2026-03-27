@@ -500,6 +500,102 @@ def _symmetric_axis_range(
     return -half, half
 
 
+# Pixel offsets (ax, ay) for label text vs marker; +x = right, +y = down (screen).
+# Order: left, upper-left, above, upper-right, right — for points with y > 0 (above x-axis).
+_QUADRANT_LABEL_UP_PX: tuple[tuple[int, int], ...] = (
+    (-1, 0),
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (1, 0),
+)
+# Mirror below y=0: right, lower-right, below, lower-left, left.
+_QUADRANT_LABEL_DOWN_PX: tuple[tuple[int, int], ...] = (
+    (1, 0),
+    (1, 1),
+    (0, 1),
+    (-1, 1),
+    (-1, 0),
+)
+
+
+def _quadrant_point_label_annotations(
+    plot_show: pd.DataFrame,
+    dx_col: str,
+    dy_col: str,
+    *,
+    max_chars: int = 30,
+) -> list[dict]:
+    """
+    Lowest-taxonomy labels with leader lines. Points above the horizontal y=0 line
+    cycle through left → upper-left → above → upper-right → right; points on or below
+    use the mirrored downward set (right → lower-right → below → lower-left → left).
+    """
+    n = len(plot_show)
+    if n == 0:
+        return []
+    xs = plot_show[dx_col].astype(float).to_numpy()
+    ys = plot_show[dy_col].astype(float).to_numpy()
+    rc = plot_show["REC_COUNT"].astype(float).to_numpy()
+    rc_max = float(np.nanmax(rc)) if n else 1.0
+    if rc_max <= 0:
+        rc_max = 1.0
+    fs = int(max(7, min(10, 14 - n // 8)))
+    mchars = max(18, min(max_chars, 38 - n // 6))
+
+    above_idx = [i for i in range(n) if ys[i] > 0]
+    below_idx = [i for i in range(n) if ys[i] <= 0]
+    above_idx.sort(key=lambda i: (xs[i], ys[i]))
+    below_idx.sort(key=lambda i: (xs[i], ys[i]))
+
+    def ann_for(i: int, seq: int, up: bool) -> dict:
+        du, dv = (
+            _QUADRANT_LABEL_UP_PX[seq % 5]
+            if up
+            else _QUADRANT_LABEL_DOWN_PX[seq % 5]
+        )
+        ln = float((du * du + dv * dv) ** 0.5)
+        rec_norm = float(rc[i]) / rc_max
+        ring = seq // 5
+        r = 40.0 + ring * 9.0 + 10.0 * rec_norm
+        if n > 50:
+            r += 4.0
+        r = min(118.0, r)
+        ax_pix = int(r * du / ln)
+        ay_pix = int(r * dv / ln)
+        xi, yi = float(xs[i]), float(ys[i])
+        leaf = str(plot_show.iloc[i][LEAF_COL])
+        combo = leaf if len(leaf) <= mchars else leaf[: mchars - 1] + "…"
+        return {
+            "x": xi,
+            "y": yi,
+            "xref": "x",
+            "yref": "y",
+            "text": combo,
+            "showarrow": True,
+            "arrowhead": 2,
+            "arrowsize": 0.85,
+            "arrowwidth": 0.75,
+            "arrowcolor": CHART_TEXT,
+            "axref": "pixel",
+            "ayref": "pixel",
+            "ax": ax_pix,
+            "ay": ay_pix,
+            "font": dict(family=FONT_FAMILY, size=fs, color=CHART_TEXT),
+            "align": "center",
+            "bgcolor": "rgba(255,255,255,0.78)",
+            "borderwidth": 0,
+            "borderpad": 2,
+        }
+
+    out: list[dict] = []
+    for seq, i in enumerate(above_idx):
+        out.append(ann_for(i, seq, up=True))
+    for seq, i in enumerate(below_idx):
+        out.append(ann_for(i, seq, up=False))
+    return out
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Taxonomy ↔ Health interest",
@@ -1149,7 +1245,8 @@ def main() -> None:
                     f"Cohort medians (plotted points): "
                     f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**, "
                     f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**. "
-                    "**Point color** is health interest; hover for lowest taxonomy and metrics."
+                    "**Point color** is health interest. Labels show lowest taxonomy; above **y = 0** "
+                    "they fan upward (left through right); on or below **y = 0** they fan downward."
                 )
                 plot_show = plot_df.rename(
                     columns={
@@ -1206,6 +1303,9 @@ def main() -> None:
                 half = max(abs(xr0), abs(xr1), abs(yr0), abs(yr1))
                 xr0, xr1 = -half, half
                 yr0, yr1 = -half, half
+                quad_labels = _quadrant_point_label_annotations(
+                    plot_show, dx_col, dy_col
+                )
                 fig_q.update_layout(
                     font=_plot_base_font(),
                     hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
@@ -1213,6 +1313,7 @@ def main() -> None:
                     margin=dict(l=72, r=72, t=88, b=72),
                     xaxis=dict(range=[xr0, xr1], zeroline=False),
                     yaxis=dict(range=[yr0, yr1], zeroline=False, scaleanchor="x", scaleratio=1),
+                    annotations=quad_labels,
                     legend=dict(
                         title=dict(text="Health interest"),
                         font=dict(family=FONT_FAMILY, color=CHART_TEXT),
