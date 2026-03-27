@@ -1336,7 +1336,13 @@ def main() -> None:
                     size="REC_COUNT",
                     color=HEALTH_COL,
                     text=_lbl_col,
-                    custom_data=[LEAF_COL, HEALTH_COL],
+                    custom_data=[
+                        LEAF_COL,
+                        HEALTH_COL,
+                        "REC_COUNT",
+                        "SHARE_WITHIN_HEALTH_INTEREST",
+                        "SHARE_WITHIN_LOWEST_TAXONOMY",
+                    ],
                     color_discrete_map=_hi_color_map,
                     category_orders={HEALTH_COL: _hi_sorted},
                     labels={
@@ -1352,7 +1358,10 @@ def main() -> None:
                     marker=dict(line=dict(width=0.5, color="DarkSlateGrey")),
                     hovertemplate=(
                         "Taxonomy: <b>%{customdata[0]}</b><br>"
-                        "Health interest: <b>%{customdata[1]}</b><extra></extra>"
+                        "Health interest: <b>%{customdata[1]}</b><br>"
+                        "Rec count: <b>%{customdata[2]:,.0f}</b><br>"
+                        "Share within health interest: <b>%{customdata[3]:.2f}%</b><br>"
+                        "Share within category: <b>%{customdata[4]:.2f}%</b><extra></extra>"
                     ),
                 )
                 fig_q.add_hline(
