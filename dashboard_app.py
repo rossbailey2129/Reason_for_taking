@@ -482,10 +482,8 @@ def _quadrant_axis_half_from_series(
     min_half: float = 1.0,
 ) -> float:
     """
-    Symmetric half-range for one quadrant axis from the **plotted** mean-centered
-    values only (same rows as the scatter). Uses max(|min|, |max|), then the larger of
-    proportional pad and ``min_pts_pad`` extra percentage points (e.g. 25→~35, 40→~50),
-    then tick-friendly snapping.
+    Symmetric half-range from the **plotted** axis values (same rows as the scatter).
+    Uses max(|min|, |max|), padding, ``min_pts_pad``, then tick-friendly snapping.
     """
     v = pd.to_numeric(centered, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
     if v.empty:
@@ -552,48 +550,18 @@ def _quadrant_label_annotations() -> list[dict]:
     ]
 
 
-def _quadrant_recompute_shares_from_rec(rows: pd.DataFrame, ref: pd.DataFrame) -> pd.DataFrame:
-    """
-    Replace share columns using REC_COUNT and totals from ``ref``:
-    share within interest H = 100 * rec / sum(rec for H in ref);
-    share within leaf L = 100 * rec / sum(rec for L in ref).
-    So “share within taxonomy” counts uses of L across **all** interests present in ``ref``,
-    not only the quadrant’s interest subset.
-    """
-    if ref.empty or rows.empty:
-        return rows.copy()
-    hi_tot = ref.groupby(HEALTH_COL, as_index=False)["REC_COUNT"].sum().rename(
-        columns={"REC_COUNT": "_hi_den"}
-    )
-    lf_tot = ref.groupby(LEAF_COL, as_index=False)["REC_COUNT"].sum().rename(
-        columns={"REC_COUNT": "_lf_den"}
-    )
-    out = rows.merge(hi_tot, on=HEALTH_COL, how="left").merge(lf_tot, on=LEAF_COL, how="left")
-    rc = out["REC_COUNT"].astype(float)
-    hi_d = out["_hi_den"].replace(0, np.nan).astype(float)
-    lf_d = out["_lf_den"].replace(0, np.nan).astype(float)
-    out["SHARE_WITHIN_HEALTH_INTEREST"] = 100.0 * rc / hi_d
-    out["SHARE_WITHIN_LOWEST_TAXONOMY"] = 100.0 * rc / lf_d
-    out = out.drop(columns=["_hi_den", "_lf_den"])
-    return out
-
-
 def _quadrant_plot_frame(
     df: pd.DataFrame,
     selected_interests: list[str],
     top_n_taxonomies: int,
-    *,
-    share_denominator_ref: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, float, float]:
     """
     Rows for selected health interests (empty = all), restricted to top-N lowest taxonomies
-    by total REC_COUNT in that slice. Adds ``x_vs_mean`` / ``y_vs_mean``: share within
-    health interest and share within lowest taxonomy, each minus the **mean of the
-    displayed rows** (so (0, 0) is the cohort average on the chart).
+    by total REC_COUNT in that slice. Uses **precomputed** share columns from the CSV.
 
-    If ``share_denominator_ref`` is set, both share columns are **recomputed** from
-    ``REC_COUNT`` using row sums in that reference frame (e.g. full file) so denominators
-    can include pairs outside the quadrant interest filter.
+    Adds ``x_lift_pct`` / ``y_lift_pct``: multiplicative **lift vs the cohort median** among
+    plotted rows, as ``(share / median − 1) × 100``. So **(0, 0)** means at the median on
+    both axes; **+50** means 1.5× the median share on that axis.
     """
     sub = (
         df[df[HEALTH_COL].isin(selected_interests)]
@@ -608,13 +576,15 @@ def _quadrant_plot_frame(
     plot_df = sub[sub[LEAF_COL].isin(top_leaves)].copy()
     if plot_df.empty:
         return plot_df, float("nan"), float("nan")
-    if share_denominator_ref is not None and not share_denominator_ref.empty:
-        plot_df = _quadrant_recompute_shares_from_rec(plot_df, share_denominator_ref)
-    mean_hi = float(plot_df["SHARE_WITHIN_HEALTH_INTEREST"].mean())
-    mean_lt = float(plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"].mean())
-    plot_df["x_vs_mean"] = plot_df["SHARE_WITHIN_HEALTH_INTEREST"] - mean_hi
-    plot_df["y_vs_mean"] = plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"] - mean_lt
-    return plot_df, mean_hi, mean_lt
+    med_hi = float(plot_df["SHARE_WITHIN_HEALTH_INTEREST"].median())
+    med_lt = float(plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"].median())
+    if not np.isfinite(med_hi) or not np.isfinite(med_lt) or med_hi <= 0 or med_lt <= 0:
+        return pd.DataFrame(), med_hi, med_lt
+    sh = plot_df["SHARE_WITHIN_HEALTH_INTEREST"].astype(float)
+    sl = plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"].astype(float)
+    plot_df["x_lift_pct"] = (sh / med_hi - 1.0) * 100.0
+    plot_df["y_lift_pct"] = (sl / med_lt - 1.0) * 100.0
+    return plot_df, med_hi, med_lt
 
 
 def main() -> None:
@@ -1216,14 +1186,12 @@ def main() -> None:
             _show_plotly_figure_scrollable(fig_hm)
 
     with tab_quadrant:
-        st.subheader("Specificity and confidence (mean-centered quadrants)")
+        st.subheader("Specificity and confidence (lift vs median)")
         st.caption(
-            "**X** = share within health interest; **Y** = share within lowest taxonomy. "
-            "Each axis plots **difference from the mean share (percentage points)** among the "
-            "points shown, so **(0, 0)** is the **average** of the plotted slice (after filters, "
-            "interest selection, and Top N taxonomies). Axes are **linear**. "
-            "Choose **share denominators** so “within taxonomy” can include recommendations in "
-            "interests **outside** the quadrant pick (see below). "
+            "**X** / **Y** use **precomputed** shares from the file (within health interest vs "
+            "within lowest taxonomy). Each axis is **multiplicative lift vs the median** among "
+            "the points plotted: **(share ÷ median − 1) × 100**. So **0** = at the cohort median, "
+            "**+100** = **2×** the median, **−50** = **half** the median. **Linear** axes. "
             "Leave **Health interests** empty to include all interests in the slice."
         )
         tab_quad_df = _tab_exclude_expander("quadrant", filtered)
@@ -1261,45 +1229,27 @@ def main() -> None:
                 help="Plotted points are rows for those taxonomies (after interest filter). "
                 f"Maximum is {top_n_max} (taxonomies present in this slice).",
             )
-            _qd_denom = st.radio(
-                "Share denominators (recomputed from rec counts)",
-                options=("full_file", "sidebar_filtered", "csv_columns"),
-                format_func=lambda m: {
-                    "full_file": "Full CSV — all interests & taxonomies in the file",
-                    "sidebar_filtered": "Sidebar-filtered rows only",
-                    "csv_columns": "Use precomputed share columns from the file",
-                }[m],
-                index=0,
-                key="quad_share_denom_mode",
-                help="For the first two options, shares are 100×rec÷total rec for that "
-                "interest (x) or that taxonomy (y) in the chosen universe. "
-                "Full CSV includes category use in conditions you did not select in the quadrant.",
-            )
-            if _qd_denom == "full_file":
-                _share_ref = df
-            elif _qd_denom == "sidebar_filtered":
-                _share_ref = filtered
-            else:
-                _share_ref = None
-            plot_df, mean_hi, mean_lt = _quadrant_plot_frame(
-                tab_quad_df,
-                sel_hi_q,
-                int(top_n_quad),
-                share_denominator_ref=_share_ref,
+            plot_df, med_hi, med_lt = _quadrant_plot_frame(
+                tab_quad_df, sel_hi_q, int(top_n_quad)
             )
             if plot_df.empty:
-                st.info("No rows for this selection after filters.")
+                if np.isfinite(med_hi) and np.isfinite(med_lt) and (med_hi <= 0 or med_lt <= 0):
+                    st.warning(
+                        "Cannot compute lift: median share on one or both axes is zero or invalid."
+                    )
+                else:
+                    st.info("No rows for this selection after filters.")
             else:
                 st.caption(
-                    f"**Means among plotted points:** "
-                    f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{mean_hi:.2f}**, "
-                    f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{mean_lt:.2f}** "
-                    "(these map to **(0, 0)** on the axes below)."
+                    f"**Medians among plotted points (lift baseline):** "
+                    f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**, "
+                    f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}** "
+                    "(**0% lift** on an axis = this median share)."
                 )
-                x_col = "Interest share minus mean (% pts)"
-                y_col = "Lowest taxonomy share minus mean (% pts)"
+                x_col = "Lift vs median: interest share (% mult.)"
+                y_col = "Lift vs median: taxonomy share (% mult.)"
                 plot_show = plot_df.rename(
-                    columns={"x_vs_mean": x_col, "y_vs_mean": y_col}
+                    columns={"x_lift_pct": x_col, "y_lift_pct": y_col}
                 )
                 fig_q = px.scatter(
                     plot_show,
@@ -1309,8 +1259,8 @@ def main() -> None:
                     color=HEALTH_COL,
                     hover_name=LEAF_COL,
                     labels={
-                        x_col: "Δ vs mean: share within health interest (% pts)",
-                        y_col: "Δ vs mean: share within lowest taxonomy (% pts)",
+                        x_col: "Lift vs median — share within health interest ((ratio−1)×100)",
+                        y_col: "Lift vs median — share within lowest taxonomy ((ratio−1)×100)",
                     },
                     opacity=0.65,
                 )
@@ -1333,8 +1283,12 @@ def main() -> None:
                     line_color=CHART_TEXT,
                     opacity=0.55,
                 )
-                x_half = _quadrant_axis_half_from_series(plot_show[x_col])
-                y_half = _quadrant_axis_half_from_series(plot_show[y_col])
+                x_half = _quadrant_axis_half_from_series(
+                    plot_show[x_col], min_pts_pad=5.0
+                )
+                y_half = _quadrant_axis_half_from_series(
+                    plot_show[y_col], min_pts_pad=5.0
+                )
                 xr0, xr1 = -x_half, x_half
                 yr0, yr1 = -y_half, y_half
                 fig_q.update_layout(
