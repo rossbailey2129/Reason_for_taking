@@ -38,6 +38,8 @@ SHARE_COLS = frozenset(
 )
 # Bump when in-memory scale for share columns changes (invalidates old 0–1 slider state).
 _SHARE_UI_VERSION = 2
+# Quadrant "Top N" widget session key; bump to reset stale values (e.g. old default = all taxa).
+_QUADRANT_TOP_N_STATE_KEY = "quad_top_n_v3"
 
 BAR_FILL = "#e6f1fc"
 CHART_TEXT = "#36485c"
@@ -1212,21 +1214,25 @@ def main() -> None:
             # stale session values clamp to 80 when fewer than 80 taxa existed).
             top_n_max = n_leaf_unique
             quad_top_n_default = min(20, n_leaf_unique)
-            if "quad_top_n_v2" in st.session_state:
+            _qnk = _QUADRANT_TOP_N_STATE_KEY
+            # Streamlit ignores number_input's default when the key already exists; old keys
+            # could still hold 440 (= all taxa). Initialize missing key to 20; clamp existing.
+            if _qnk not in st.session_state:
+                st.session_state[_qnk] = quad_top_n_default
+            else:
                 try:
-                    cur = int(st.session_state.quad_top_n_v2)
+                    cur = int(st.session_state[_qnk])
                     if cur > top_n_max:
-                        st.session_state.quad_top_n_v2 = top_n_max
+                        st.session_state[_qnk] = top_n_max
                     elif cur < 1:
-                        st.session_state.quad_top_n_v2 = 1
+                        st.session_state[_qnk] = 1
                 except (TypeError, ValueError):
-                    st.session_state.quad_top_n_v2 = quad_top_n_default
+                    st.session_state[_qnk] = quad_top_n_default
             top_n_quad = st.number_input(
                 "Top N lowest taxonomies (by total rec count in slice)",
-                1,
-                top_n_max,
-                quad_top_n_default,
-                key="quad_top_n_v2",
+                min_value=1,
+                max_value=top_n_max,
+                key=_qnk,
                 help="Lower N to focus on the busiest taxonomies; max includes every "
                 "lowest taxonomy present in the slice.",
             )
