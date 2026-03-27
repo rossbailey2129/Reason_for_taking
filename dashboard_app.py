@@ -501,52 +501,57 @@ def _symmetric_axis_range(
     return -half, half
 
 
-def _quadrant_leader_radius_px(local_neighbors: int, n_total: int) -> float:
-    """
-    Leader length (pixels): short when few nearby points, longer only when crowded.
-    Isolated points stay close to the marker; dense pockets extend modestly.
-    """
+# Pixel offsets (ax, ay) for label tail vs marker head; +y = down on screen.
+# Order: upper-left, above, upper-right, right, lower-right, below, lower-left, left.
+_QUADRANT_LABEL_OCTANTS: tuple[tuple[int, int], ...] = (
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (1, 0),
+    (1, 1),
+    (0, 1),
+    (-1, 1),
+    (-1, 0),
+)
+
+
+def _octant_leader_radius_px(local_neighbors: int, n_total: int) -> float:
+    """Short leader so labels sit near each bubble; small bump when crowded."""
     d = max(0, int(local_neighbors))
-    if d <= 0:
-        r = 24.0
-    elif d == 1:
-        r = 30.0
-    elif d <= 3:
-        r = 34.0 + 5.5 * (d - 1)
-    elif d <= 6:
-        r = 45.0 + 4.0 * (d - 3)
-    elif d <= 10:
-        r = 57.0 + 3.0 * (d - 6)
-    else:
-        r = min(92.0, 69.0 + 2.0 * (d - 10))
-    if n_total > 50:
-        r += 3.0
-    if n_total > 80:
-        r += 4.0
-    return float(min(96.0, r))
+    r = 22.0 + 2.6 * min(d, 12)
+    if n_total > 55:
+        r += 2.0
+    return float(min(50.0, r))
 
 
-def _quad_local_y_stagger_px(
-    i: int,
+def _assign_octant_slots(
     xs: np.ndarray,
     ys: np.ndarray,
-    band: float,
-) -> tuple[int, int]:
+    *,
+    conflict_band: float = 5.5,
+) -> list[int]:
     """
-    Among points within ``band`` (data units), sort by y and return pixel offset
-    so labels stack on a vertical column; also return local group size.
+    Eight compass slots around each marker (cycled by index). Neighbors within
+    ``conflict_band`` (data units) avoid reusing an octant already taken.
     """
-    b2 = band * band
-    d2 = (xs - xs[i]) ** 2 + (ys - ys[i]) ** 2
-    idxs = np.where(d2 <= b2)[0]
-    nloc = len(idxs)
-    if nloc <= 1:
-        return 0, nloc
-    order = idxs[np.argsort(ys[idxs])]
-    rank = int(np.flatnonzero(order == i)[0])
-    step = float(min(18.0, 10.0 + 0.45 * nloc))
-    ay = (rank - (nloc - 1) / 2.0) * step
-    return int(ay), nloc
+    n = len(xs)
+    slots: list[int] = []
+    b2 = conflict_band**2
+    for idx in range(n):
+        preferred = (idx * 3) % 8
+        taken: set[int] = set()
+        xi, yi = float(xs[idx]), float(ys[idx])
+        for j in range(idx):
+            if (xs[j] - xi) ** 2 + (ys[j] - yi) ** 2 <= b2:
+                taken.add(slots[j])
+        chosen = preferred
+        for k in range(8):
+            cand = (preferred + k) % 8
+            if cand not in taken:
+                chosen = cand
+                break
+        slots.append(chosen)
+    return slots
 
 
 def _quadrant_leader_label_annotations(
@@ -557,13 +562,11 @@ def _quadrant_leader_label_annotations(
     max_chars: int = 34,
 ) -> list[dict]:
     """
-    Taxonomy-only labels (health interest is encoded by point color).
+    Taxonomy-only labels (health interest = point color).
 
-    Sparse areas: short leaders aimed radially from the chart origin.
-
-    Crowded areas (several neighbors nearby): **vertical-plane** layout — labels sit
-    to the left or right of the cohort (split by median x) with pixel offsets, and
-    nearby points are staggered vertically by y-order so text forms readable columns.
+    Each label uses one of eight positions around its bubble (NW, N, NE, E, SE, S,
+    SW, W) with a short leader. Octants rotate by row order; close neighbors pick
+    different slots when possible.
     """
     n = len(plot_show)
     if n == 0:
@@ -576,37 +579,18 @@ def _quadrant_leader_label_annotations(
     for i in range(n):
         d2 = (xs - xs[i]) ** 2 + (ys - ys[i]) ** 2
         densities.append(int(np.sum(d2 <= neigh_sq)) - 1)
-    median_x = float(np.median(xs))
+    oct_slots = _assign_octant_slots(xs, ys)
     fs = int(max(7, min(10, 14 - n // 8)))
     mchars = max(20, min(max_chars, 40 - n // 5))
-    golden = math.pi * (3.0 - math.sqrt(5.0))
-    origin_eps = 0.45
-    dense_threshold = 3
-    stagger_band = 8.5
     out: list[dict] = []
     for idx, (_, row) in enumerate(plot_show.iterrows()):
         xi, yi = float(row[dx_col]), float(row[dy_col])
         dens = max(0, densities[idx])
-        r = _quadrant_leader_radius_px(dens, n)
-        if dens >= dense_threshold:
-            if xi < median_x:
-                side = -1
-            elif xi > median_x:
-                side = 1
-            else:
-                side = -1 if idx % 2 == 0 else 1
-            ay_stagger, _nloc = _quad_local_y_stagger_px(idx, xs, ys, stagger_band)
-            ax_pix = int(side * r * 1.05)
-            ay_pix = ay_stagger
-        else:
-            h = math.hypot(xi, yi)
-            if h >= origin_eps:
-                ux, uy = xi / h, yi / h
-            else:
-                th = (idx + 0.318) * golden
-                ux, uy = math.cos(th), math.sin(th)
-            ax_pix = int(r * ux)
-            ay_pix = int(-r * uy)
+        r = _octant_leader_radius_px(dens, n)
+        du, dv = _QUADRANT_LABEL_OCTANTS[oct_slots[idx]]
+        ln = math.hypot(float(du), float(dv))
+        ax_pix = int(r * du / ln)
+        ay_pix = int(r * dv / ln)
         leaf = str(row[LEAF_COL])
         combo = leaf if len(leaf) <= mchars else leaf[: mchars - 1] + "…"
         out.append(
@@ -1285,7 +1269,8 @@ def main() -> None:
                     f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**, "
                     f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**. "
                     "Labels are **lowest taxonomy** only; **point color** is health interest. "
-                    "Where points bunch, labels shift to left/right columns with vertical spacing."
+                    "Each label sits on one of eight compass positions around its bubble "
+                    "(short leader), rotating around the chart so neighbors use different sides."
                 )
                 plot_show = plot_df.rename(
                     columns={
