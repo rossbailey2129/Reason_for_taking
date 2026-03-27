@@ -501,6 +501,35 @@ def _symmetric_axis_range(
     return -half, half
 
 
+def _quadrant_label_angle_bounds(xi: float, yi: float) -> tuple[float, float]:
+    """
+    Allowed atan2(y, x) interval (radians) so pixel offset (cos θ, -sin θ) from the
+    marker keeps the label in the correct screen wedge:
+    UR (x>0,y>0): right + above (ax≥0, ay≤0); UL: left + above; LR: right + below; LL: left + below.
+    """
+    eps = 0.08  # stay inside the quadrant in angle space (~4.6° from boundary rays)
+    t = 1e-12
+    if abs(xi) < t and abs(yi) < t:
+        return (eps, math.pi / 2 - eps)
+    if xi > 0 and yi > 0:
+        return (eps, math.pi / 2 - eps)
+    if xi < 0 and yi > 0:
+        return (math.pi / 2 + eps, math.pi - eps)
+    if xi < 0 and yi < 0:
+        return (-math.pi + eps, -math.pi / 2 - eps)
+    if xi > 0 and yi < 0:
+        return (-math.pi / 2 + eps, -eps)
+    if xi > 0 and abs(yi) <= t:
+        return (-math.pi / 2 + eps, -eps)
+    if xi < 0 and abs(yi) <= t:
+        return (math.pi / 2 + eps, math.pi - eps)
+    if abs(xi) <= t and yi > 0:
+        return (eps, math.pi / 2 - eps)
+    if abs(xi) <= t and yi < 0:
+        return (-math.pi + eps, -math.pi / 2 - eps)
+    return (eps, math.pi / 2 - eps)
+
+
 def _quadrant_point_label_annotations(
     plot_show: pd.DataFrame,
     dx_col: str,
@@ -509,10 +538,10 @@ def _quadrant_point_label_annotations(
     max_chars: int = 30,
 ) -> list[dict]:
     """
-    Lowest-taxonomy labels with leader lines. Plotly draws the arrow **from the text
-    to the marker**, so the text is offset **toward (0, 0)** from the point along the
-    same radial line. The leader then runs **away from the median** toward the bubble
-    in that quadrant (not back toward the intercept).
+    Lowest-taxonomy labels with leader lines. Text is offset **outward** from (0, 0)
+    past the marker (Plotly draws the arrow from text to the point). Angle spread is
+    **clamped per quadrant** so labels never sit on the wrong side of the marker
+    (e.g. UR points never get a label left of the bubble).
     """
     n = len(plot_show)
     if n == 0:
@@ -526,28 +555,27 @@ def _quadrant_point_label_annotations(
     fs = int(max(7, min(10, 14 - n // 8)))
     mchars = max(18, min(max_chars, 38 - n // 6))
 
-    # Polar sort so sequential spread tends to separate labels in crowded wedges.
     order = list(range(n))
     order.sort(key=lambda i: (math.atan2(ys[i], xs[i]), math.hypot(xs[i], ys[i])))
 
     n_spread = 7
-    spread_step = math.radians(8.0)
+    spread_step = math.radians(7.0)
     spread_angles = [(k - n_spread // 2) * spread_step for k in range(n_spread)]
 
     out: list[dict] = []
     for seq, i in enumerate(order):
         xi, yi = float(xs[i]), float(ys[i])
         h = math.hypot(xi, yi)
+        lo, hi = _quadrant_label_angle_bounds(xi, yi)
         if h < 1e-9:
-            theta = (i * 2.5132741228718345) % (2.0 * math.pi)
+            theta = 0.5 * (lo + hi)
         else:
             theta = math.atan2(yi, xi)
         theta_eff = theta + spread_angles[seq % n_spread]
-        # Unit direction from origin → point in data; map to pixel offset (x same, y flipped).
-        # Use the **negation** so the label sits on the origin side of the marker: the
-        # arrow (text → point) then points outward from (0,0), not toward it.
-        u_ax = -math.cos(theta_eff)
-        u_ay = math.sin(theta_eff)
+        theta_c = min(max(theta_eff, lo), hi)
+        # Outward from origin in data (+y up); screen +ay is down → u_ay = -sin θ.
+        u_ax = math.cos(theta_c)
+        u_ay = -math.sin(theta_c)
         rec_norm = float(rc[i]) / rc_max
         ring = seq // n_spread
         r = 38.0 + ring * 10.0 + 11.0 * rec_norm
@@ -1233,9 +1261,9 @@ def main() -> None:
                     f"Cohort medians (plotted points): "
                     f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**, "
                     f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**. "
-                    "**Point color** is health interest. Labels sit **between the median and the "
-                    "point** so leader lines run **from the label toward the bubble**, away from "
-                    "(0, 0), with a small angle spread when many points share a direction."
+                    "**Point color** is health interest. Labels stay in the **same screen wedge** as "
+                    "their quadrant (e.g. upper-right → only above/right of the point), with a "
+                    "small in-quadrant angle spread."
                 )
                 plot_show = plot_df.rename(
                     columns={
