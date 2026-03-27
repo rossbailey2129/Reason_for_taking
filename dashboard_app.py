@@ -45,7 +45,7 @@ _QUAD_PAIR_KEY_SEP = "\x1f"
 # Quadrant: Plotly point selection toggles text labels (needs streamlit>=1.35).
 _QUAD_PLOTLY_WIDGET_KEY = "quad_scatter_plotly"
 _QUAD_HIDDEN_LABEL_PAIRS_KEY = "quad_hidden_label_pairs"
-_QUAD_LABEL_RECO_GE_KEY = "quad_label_reco_ge"
+_QUAD_LABEL_RECO_LE_KEY = "quad_label_reco_le"
 _QUAD_LABEL_FORCE_SHOW_KEY = "quad_label_force_show_pairs"
 _QUAD_LABEL_PREV_HIDDEN_KEY = "quad_label_prev_hidden_snapshot"
 _QUAD_PLOTLY_LAST_SEL_SIG_KEY = "quad_plotly_selection_sig"
@@ -699,36 +699,50 @@ def _quadrant_selection_signature(points: list[dict]) -> str:
     return json.dumps(parts, default=str)
 
 
-def _quadrant_apply_plotly_label_toggle() -> list[tuple[str, bool]]:
+def _quadrant_apply_plotly_label_toggle(plot_df: pd.DataFrame) -> None:
     """
-    Toggle manual hide list from the latest Plotly selection.
+    React to Plotly point selection:
 
-    Returns (pair_key, now_hidden) for each toggled point: now_hidden True if the pair
-    was added to the hidden list, False if removed (shown again).
+    - Pair is **manually** hidden: click removes it from the manual list; if rec ≤ threshold,
+      add a force-show so the label appears despite the counter rule.
+    - Pair is not manually hidden and **rec ≤ threshold**: click toggles force-show only
+      (show label again vs let the counter hide it). Does not use the manual-hide list.
+    - Otherwise (rec above threshold or counter off): click toggles **manual** hide for the pair.
     """
-    out: list[tuple[str, bool]] = []
     if _QUAD_PLOTLY_WIDGET_KEY not in st.session_state:
-        return out
+        return
     pts = _quadrant_plotly_selection_points(st.session_state[_QUAD_PLOTLY_WIDGET_KEY])
     sig = _quadrant_selection_signature(pts)
     if sig == st.session_state.get(_QUAD_PLOTLY_LAST_SEL_SIG_KEY):
-        return out
+        return
     st.session_state[_QUAD_PLOTLY_LAST_SEL_SIG_KEY] = sig
     if not pts:
-        return out
+        return
+    reco_le = int(st.session_state.get(_QUAD_LABEL_RECO_LE_KEY, 0) or 0)
     hs = set(st.session_state.get(_QUAD_HIDDEN_LABEL_PAIRS_KEY) or [])
+    fs = set(st.session_state.get(_QUAD_LABEL_FORCE_SHOW_KEY) or [])
     for pt in pts:
         pk = _pair_key_from_plotly_point(pt)
         if not pk:
             continue
+        rec = _rec_count_from_plotly_point(pt, pk, plot_df)
         if pk in hs:
             hs.discard(pk)
-            out.append((pk, False))
-        else:
-            hs.add(pk)
-            out.append((pk, True))
+            if reco_le > 0 and rec <= float(reco_le):
+                fs.add(pk)
+            else:
+                fs.discard(pk)
+            continue
+        if reco_le > 0 and rec <= float(reco_le):
+            if pk in fs:
+                fs.discard(pk)
+            else:
+                fs.add(pk)
+            continue
+        fs.discard(pk)
+        hs.add(pk)
     st.session_state[_QUAD_HIDDEN_LABEL_PAIRS_KEY] = sorted(hs)
-    return out
+    st.session_state[_QUAD_LABEL_FORCE_SHOW_KEY] = sorted(fs)
 
 
 def _pair_max_rec_count(pair_key: str, plot_df: pd.DataFrame) -> float:
@@ -745,38 +759,57 @@ def _pair_max_rec_count(pair_key: str, plot_df: pd.DataFrame) -> float:
     return float(m.astype(float).max())
 
 
-def _quadrant_sync_label_force_show(
-    plot_df: pd.DataFrame,
-    reco_ge: int,
-    plotly_toggles: list[tuple[str, bool]],
-) -> None:
-    """
-    Maintain pairs that must show labels despite the rec ≥ rule (manual override).
+def _pair_min_rec_count(pair_key: str, plot_df: pd.DataFrame) -> float:
+    parts = pair_key.split(_QUAD_PAIR_KEY_SEP, 1)
+    if len(parts) != 2:
+        return 0.0
+    leaf_s, hi_s = parts
+    m = plot_df[
+        (plot_df[LEAF_COL].astype(str) == leaf_s)
+        & (plot_df[HEALTH_COL].astype(str) == hi_s)
+    ]["REC_COUNT"]
+    if m.empty:
+        return 0.0
+    return float(m.astype(float).min())
 
-    Manual hide always wins via the hidden list; this set only overrides automatic hides.
+
+def _rec_count_from_plotly_point(
+    pt: dict, pair_key: str, plot_df: pd.DataFrame
+) -> float:
+    """REC_COUNT for the selected marker (customdata), else max for that pair in plot_df."""
+    cd = pt.get("customdata")
+    if cd is not None:
+        if hasattr(cd, "tolist"):
+            cd = cd.tolist()
+        if isinstance(cd, (list, tuple)) and len(cd) > 2:
+            try:
+                return float(cd[2])
+            except (TypeError, ValueError):
+                pass
+    return _pair_max_rec_count(pair_key, plot_df)
+
+
+def _quadrant_sync_label_force_show(plot_df: pd.DataFrame, reco_le: int) -> None:
+    """
+    After Plotly handling: multiselect changes vs last run add/remove force-show overrides;
+    prune stale force-show entries. Manual hide always wins (force-show cannot apply to hidden pairs).
     """
     prev_h = frozenset(st.session_state.get(_QUAD_LABEL_PREV_HIDDEN_KEY) or [])
     curr_h = set(st.session_state.get(_QUAD_HIDDEN_LABEL_PAIRS_KEY) or [])
     fs = set(st.session_state.get(_QUAD_LABEL_FORCE_SHOW_KEY) or [])
 
-    for pk, now_hidden in plotly_toggles:
-        if now_hidden:
-            fs.discard(pk)
-        elif reco_ge > 0 and _pair_max_rec_count(pk, plot_df) >= reco_ge:
-            fs.add(pk)
-
     for pk in prev_h - curr_h:
-        if reco_ge > 0 and _pair_max_rec_count(pk, plot_df) >= reco_ge:
+        if reco_le > 0 and _pair_min_rec_count(pk, plot_df) <= float(reco_le):
             fs.add(pk)
     for pk in curr_h - prev_h:
         fs.discard(pk)
 
     fs -= curr_h
-    if reco_ge <= 0:
+    if reco_le <= 0:
         fs.clear()
     else:
         for pk in list(fs):
-            if _pair_max_rec_count(pk, plot_df) < reco_ge:
+            if _pair_min_rec_count(pk, plot_df) > float(reco_le):
                 fs.discard(pk)
 
     st.session_state[_QUAD_LABEL_FORCE_SHOW_KEY] = sorted(fs)
@@ -1447,13 +1480,13 @@ def main() -> None:
                     _pair_labels[_pk] = f"{_pr[LEAF_COL]} — {_pr[HEALTH_COL]}"
                 if _QUAD_HIDDEN_LABEL_PAIRS_KEY not in st.session_state:
                     st.session_state[_QUAD_HIDDEN_LABEL_PAIRS_KEY] = []
-                if _QUAD_LABEL_RECO_GE_KEY not in st.session_state:
-                    st.session_state[_QUAD_LABEL_RECO_GE_KEY] = 0
+                if _QUAD_LABEL_RECO_LE_KEY not in st.session_state:
+                    st.session_state[_QUAD_LABEL_RECO_LE_KEY] = 0
                 if _QUAD_LABEL_FORCE_SHOW_KEY not in st.session_state:
                     st.session_state[_QUAD_LABEL_FORCE_SHOW_KEY] = []
-                _reco_ge = int(st.session_state.get(_QUAD_LABEL_RECO_GE_KEY, 0) or 0)
-                _plotly_lbl_toggles = _quadrant_apply_plotly_label_toggle()
-                _quadrant_sync_label_force_show(plot_df, _reco_ge, _plotly_lbl_toggles)
+                _reco_le = int(st.session_state.get(_QUAD_LABEL_RECO_LE_KEY, 0) or 0)
+                _quadrant_apply_plotly_label_toggle(plot_df)
+                _quadrant_sync_label_force_show(plot_df, _reco_le)
                 _quad_show_lbl = st.session_state.get("quad_show_point_labels", True)
                 _quad_hidden_pairs = st.session_state.get(_QUAD_HIDDEN_LABEL_PAIRS_KEY, [])
                 _force_show_set = frozenset(
@@ -1471,13 +1504,13 @@ def main() -> None:
                     + plot_show[HEALTH_COL].astype(str)
                 )
                 _hidden_set = frozenset(_quad_hidden_pairs)
-                if _reco_ge > 0:
-                    _hide_hi_reco = plot_show["REC_COUNT"].astype(float) >= float(_reco_ge)
+                if _reco_le > 0:
+                    _hide_lo_reco = plot_show["REC_COUNT"].astype(float) <= float(_reco_le)
                 else:
-                    _hide_hi_reco = pd.Series(False, index=plot_show.index)
+                    _hide_lo_reco = pd.Series(False, index=plot_show.index)
                 if _quad_show_lbl:
                     _no_label = _row_keys.isin(_hidden_set) | (
-                        _hide_hi_reco & ~_row_keys.isin(_force_show_set)
+                        _hide_lo_reco & ~_row_keys.isin(_force_show_set)
                     )
                     plot_show[_lbl_col] = np.where(
                         _no_label,
@@ -1492,9 +1525,9 @@ def main() -> None:
                     for i, h in enumerate(_hi_sorted)
                 }
                 st.caption(
-                    "**Labels:** Plotly point selection toggles **manual** hide for that pair (always wins). "
-                    "Set **rec count ≥** in the expander to hide labels on busy points; chart or multiselect "
-                    "**show** overrides that rule for pairs you pick."
+                    "**Labels:** Set **rec count ≤** in the expander to hide labels on low-count points. "
+                    "Click a marker to show that point’s label again (or hide it if it’s already shown); "
+                    "above the threshold, clicks toggle **manual** hide for the pair."
                 )
                 fig_q = px.scatter(
                     plot_show,
@@ -1591,15 +1624,14 @@ def main() -> None:
                     )
                     _rc_max = int(plot_df["REC_COUNT"].max())
                     st.number_input(
-                        "Hide taxonomy label when rec count ≥ (0 = off)",
+                        "Hide taxonomy label when rec count ≤ (0 = off)",
                         min_value=0,
                         max_value=max(_rc_max, 0),
                         step=1,
-                        key=_QUAD_LABEL_RECO_GE_KEY,
+                        key=_QUAD_LABEL_RECO_LE_KEY,
                         disabled=not st.session_state.get("quad_show_point_labels", True),
-                        help="Hides labels for points at or above this count. Manual hide (below) always "
-                        "hides; removing a pair from manual hide or toggling it on the chart shows the "
-                        "label again even when it meets this rule.",
+                        help="Hides labels for points at this count or lower. Click a marker on the chart "
+                        "to show that label again (or hide it). Manual hide (below) always removes the label.",
                     )
                     st.multiselect(
                         "Manually hide labels for these taxonomy × health interest pairs",
@@ -1607,8 +1639,8 @@ def main() -> None:
                         format_func=lambda k: _pair_labels[k],
                         key=_QUAD_HIDDEN_LABEL_PAIRS_KEY,
                         disabled=not st.session_state.get("quad_show_point_labels", True),
-                        help="Always hides the text for selected pairs. Deselect a pair or use the chart "
-                        "point tool to show its label again (overrides the rec count rule when that applies).",
+                        help="Always hides the text for selected pairs. Deselecting restores the label; "
+                        "if the rec ≤ counter would hide it, a chart click or deselect still applies a show override.",
                     )
 
 
