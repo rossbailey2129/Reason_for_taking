@@ -1191,7 +1191,7 @@ def main() -> None:
         st.caption(
             "Leave **health interests** empty to use all interests in the filtered data, "
             "or narrow to specific ones. **Top N** lowest taxonomies are chosen by total "
-            "recommendation count in that slice (default N = all taxonomies in the slice). "
+            "recommendation count in that slice (default **N = 20** taxonomies). "
             "Axes show each share **minus the median** among plotted points; (0, 0) is "
             "that cohort’s median taxonomy and interest shares."
         )
@@ -1208,23 +1208,25 @@ def main() -> None:
                 help="Taxonomies are ranked using only rows for the selected interests.",
             )
             n_leaf_unique = max(1, len(sorted_unique(tab_quad_df[LEAF_COL])))
-            top_n_max = max(80, n_leaf_unique)
+            # Max = taxonomies that exist in this slice (not a floor of 80 — that made
+            # stale session values clamp to 80 when fewer than 80 taxa existed).
+            top_n_max = n_leaf_unique
             quad_top_n_default = min(20, n_leaf_unique)
-            if "quad_top_n" in st.session_state:
+            if "quad_top_n_v2" in st.session_state:
                 try:
-                    cur = int(st.session_state.quad_top_n)
+                    cur = int(st.session_state.quad_top_n_v2)
                     if cur > top_n_max:
-                        st.session_state.quad_top_n = top_n_max
+                        st.session_state.quad_top_n_v2 = top_n_max
                     elif cur < 1:
-                        st.session_state.quad_top_n = 1
+                        st.session_state.quad_top_n_v2 = 1
                 except (TypeError, ValueError):
-                    st.session_state.quad_top_n = quad_top_n_default
+                    st.session_state.quad_top_n_v2 = quad_top_n_default
             top_n_quad = st.number_input(
                 "Top N lowest taxonomies (by total rec count in slice)",
                 1,
                 top_n_max,
                 quad_top_n_default,
-                key="quad_top_n",
+                key="quad_top_n_v2",
                 help="Lower N to focus on the busiest taxonomies; max includes every "
                 "lowest taxonomy present in the slice.",
             )
