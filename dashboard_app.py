@@ -567,8 +567,8 @@ def _quadrant_symmetric_pct_tickvals(half_pct: float, scale: float) -> tuple[lis
 
 def _quadrant_label_annotations() -> list[dict]:
     """
-    Quadrant titles just outside the plot using axis domain coordinates
-    (0–1 = plot area; values <0 or >1 sit in the margin).
+    Quadrant titles centered above the upper half and below the lower half
+    (axis domain coordinates: 0–1 = plot area).
     """
     fs = 11
     bg = "rgba(255,255,255,0.88)"
@@ -580,37 +580,36 @@ def _quadrant_label_annotations() -> list[dict]:
         opacity=1.0,
         bgcolor=bg,
         borderpad=3,
+        xanchor="center",
     )
+    y_above = 1.05
+    y_below = -0.05
     return [
         {
             **common,
-            "x": 1.02,
-            "y": 1.02,
-            "xanchor": "left",
+            "x": 0.75,
+            "y": y_above,
             "yanchor": "bottom",
             "text": "High Condition Specificity &<br>High Category Specificity",
         },
         {
             **common,
-            "x": -0.02,
-            "y": 1.02,
-            "xanchor": "right",
+            "x": 0.25,
+            "y": y_above,
             "yanchor": "bottom",
             "text": "Low Condition Specificity &<br>High Category Specificity",
         },
         {
             **common,
-            "x": -0.02,
-            "y": -0.02,
-            "xanchor": "right",
+            "x": 0.25,
+            "y": y_below,
             "yanchor": "top",
             "text": "Low Condition Specificity &<br>Low Category Specificity",
         },
         {
             **common,
-            "x": 1.02,
-            "y": -0.02,
-            "xanchor": "left",
+            "x": 0.75,
+            "y": y_below,
             "yanchor": "top",
             "text": "High Condition Specificity &<br>Low Category Specificity",
         },
@@ -1324,7 +1323,6 @@ def main() -> None:
                     y=_qy,
                     size="REC_COUNT",
                     color=HEALTH_COL,
-                    text=LEAF_COL,
                     hover_name=LEAF_COL,
                     labels={
                         _qx: f"Condition Δ vs median (asinh, s={sx:.2g} % pts)",
@@ -1333,9 +1331,7 @@ def main() -> None:
                     opacity=0.72,
                 )
                 fig_q.update_traces(
-                    mode="markers+text",
-                    textposition="top center",
-                    textfont=dict(family=FONT_FAMILY, size=9, color=CHART_TEXT),
+                    mode="markers",
                     marker=dict(line=dict(width=0.5, color="DarkSlateGrey")),
                     hovertemplate="<b>%{hovertext}</b><extra></extra>",
                 )
@@ -1365,7 +1361,7 @@ def main() -> None:
                     font=_plot_base_font(),
                     hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                     height=720,
-                    margin=dict(l=96, r=96, t=130, b=104),
+                    margin=dict(l=88, r=88, t=100, b=100),
                     annotations=_quadrant_label_annotations(),
                     xaxis=dict(range=[xr0, xr1], zeroline=False),
                     yaxis=dict(range=[yr0, yr1], zeroline=False),
@@ -1376,29 +1372,17 @@ def main() -> None:
                 )
                 fig_q.update_xaxes(
                     tickfont=_tick_font(),
-                    title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+                    title="",
                     tickmode="array",
                     tickvals=x_tv,
                     ticktext=x_tt,
-                    title=dict(
-                        text=(
-                            "Share within health interest − median (% pts), "
-                            f"symmetric log (s={sx:.2g})"
-                        )
-                    ),
                 )
                 fig_q.update_yaxes(
                     tickfont=_tick_font(),
-                    title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+                    title="",
                     tickmode="array",
                     tickvals=y_tv,
                     ticktext=y_tt,
-                    title=dict(
-                        text=(
-                            "Share within lowest taxonomy − median (% pts), "
-                            f"symmetric log (s={sy:.2g})"
-                        )
-                    ),
                 )
                 st.plotly_chart(fig_q, use_container_width=True)
 
