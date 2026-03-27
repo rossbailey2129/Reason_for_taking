@@ -516,12 +516,14 @@ _QUADRANT_LABEL_OCTANTS: tuple[tuple[int, int], ...] = (
 
 
 def _octant_leader_radius_px(local_neighbors: int, n_total: int) -> float:
-    """Short leader so labels sit near each bubble; small bump when crowded."""
+    """Pixel distance from marker to label; far enough that text clears bubble glyphs."""
     d = max(0, int(local_neighbors))
-    r = 22.0 + 2.6 * min(d, 12)
+    r = 34.0 + 3.2 * min(d, 12)
     if n_total > 55:
-        r += 2.0
-    return float(min(50.0, r))
+        r += 4.0
+    if n_total > 80:
+        r += 4.0
+    return float(min(72.0, r))
 
 
 def _assign_octant_slots(
