@@ -1204,7 +1204,7 @@ def main() -> None:
         col_a, col_b, col_c = st.columns(3)
         with col_a:
             k_leaf = st.number_input(
-                "Top lowest taxonomies (by total rec count)", 1, 80, 25
+                "Top lowest taxonomies (by total rec count)", 1, 80, 20
             )
         with col_b:
             k_hi = st.number_input("Top health interests", 1, 80, 20)
@@ -1339,6 +1339,7 @@ def main() -> None:
             )
             n_leaf_unique = max(1, len(sorted_unique(tab_quad_df[LEAF_COL])))
             top_n_max = max(80, n_leaf_unique)
+            quad_top_n_default = min(20, n_leaf_unique)
             if "quad_top_n" in st.session_state:
                 try:
                     cur = int(st.session_state.quad_top_n)
@@ -1347,12 +1348,12 @@ def main() -> None:
                     elif cur < 1:
                         st.session_state.quad_top_n = 1
                 except (TypeError, ValueError):
-                    st.session_state.quad_top_n = min(top_n_max, n_leaf_unique)
+                    st.session_state.quad_top_n = quad_top_n_default
             top_n_quad = st.number_input(
                 "Top N lowest taxonomies (by total rec count in slice)",
                 1,
                 top_n_max,
-                n_leaf_unique,
+                quad_top_n_default,
                 key="quad_top_n",
                 help="Lower N to focus on the busiest taxonomies; max includes every "
                 "lowest taxonomy present in the slice.",
