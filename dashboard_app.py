@@ -565,64 +565,53 @@ def _quadrant_symmetric_pct_tickvals(half_pct: float, scale: float) -> tuple[lis
     return tvals, [_lbl(c) for c in cand]
 
 
-def _quadrant_label_annotations(
-    x_half: float,
-    y_half: float,
-    sx: float,
-    sy: float,
-) -> list[dict]:
-    """Corner labels in asinh-scaled data coordinates (x = condition, y = category)."""
-    inset_x = 0.88
-    inset_y = 0.88
-    fs = 12
-    bg = "rgba(255,255,255,0.72)"
+def _quadrant_label_annotations() -> list[dict]:
+    """
+    Quadrant titles just outside the plot using axis domain coordinates
+    (0–1 = plot area; values <0 or >1 sit in the margin).
+    """
+    fs = 11
+    bg = "rgba(255,255,255,0.88)"
     common = dict(
-        xref="x",
-        yref="y",
+        xref="x domain",
+        yref="y domain",
         showarrow=False,
         font=dict(family=FONT_FAMILY, size=fs, color=CHART_TEXT),
-        opacity=0.92,
+        opacity=1.0,
         bgcolor=bg,
-        borderpad=4,
+        borderpad=3,
     )
-
-    def ax(u_pct: float) -> float:
-        return float(np.arcsinh(u_pct / sx))
-
-    def ay(v_pct: float) -> float:
-        return float(np.arcsinh(v_pct / sy))
-
     return [
         {
             **common,
-            "x": ax(inset_x * x_half),
-            "y": ay(inset_y * y_half),
-            "xanchor": "right",
-            "yanchor": "top",
+            "x": 1.02,
+            "y": 1.02,
+            "xanchor": "left",
+            "yanchor": "bottom",
             "text": "High Condition Specificity &<br>High Category Specificity",
         },
         {
             **common,
-            "x": ax(-inset_x * x_half),
-            "y": ay(inset_y * y_half),
-            "xanchor": "left",
-            "yanchor": "top",
+            "x": -0.02,
+            "y": 1.02,
+            "xanchor": "right",
+            "yanchor": "bottom",
             "text": "Low Condition Specificity &<br>High Category Specificity",
         },
         {
             **common,
-            "x": ax(-inset_x * x_half),
-            "y": ay(-inset_y * y_half),
-            "xanchor": "left",
-            "yanchor": "bottom",
+            "x": -0.02,
+            "y": -0.02,
+            "xanchor": "right",
+            "yanchor": "top",
             "text": "Low Condition Specificity &<br>Low Category Specificity",
         },
         {
             **common,
-            "x": ax(inset_x * x_half),
-            "y": ay(-inset_y * y_half),
-            "xanchor": "right",
-            "yanchor": "bottom",
+            "x": 1.02,
+            "y": -0.02,
+            "xanchor": "left",
+            "yanchor": "top",
             "text": "High Condition Specificity &<br>Low Category Specificity",
         },
     ]
@@ -1329,46 +1318,26 @@ def main() -> None:
                         _qy: _quadrant_pct_to_asinh(plot_show[y_col], sy),
                     }
                 )
-                hover_map_q: dict = {
-                    LEAF_COL: True,
-                    HEALTH_COL: True,
-                    "REC_COUNT": True,
-                    "SHARE_WITHIN_LOWEST_TAXONOMY": ":.2f",
-                    "SHARE_WITHIN_HEALTH_INTEREST": ":.2f",
-                    x_col: ":.2f",
-                    y_col: ":.2f",
-                }
-                for c in hover_extra:
-                    hover_map_q[c] = True
-                _cd_cols = [x_col, y_col, "REC_COUNT", *hover_extra]
                 fig_q = px.scatter(
                     plot_show,
                     x=_qx,
                     y=_qy,
                     size="REC_COUNT",
                     color=HEALTH_COL,
+                    text=LEAF_COL,
                     hover_name=LEAF_COL,
-                    hover_data=hover_map_q,
-                    custom_data=_cd_cols,
                     labels={
                         _qx: f"Condition Δ vs median (asinh, s={sx:.2g} % pts)",
                         _qy: f"Category Δ vs median (asinh, s={sy:.2g} % pts)",
                     },
                     opacity=0.72,
                 )
-                _ht_q = [
-                    "<b>%{hovertext}</b><br>",
-                    "%{fullData.name}<br>",
-                    "REC_COUNT=%{customdata[2]:,.0f}<br>",
-                    f"{x_col}=%{{customdata[0]:.2f}}<br>",
-                    f"{y_col}=%{{customdata[1]:.2f}}<br>",
-                ]
-                for _i, _c in enumerate(hover_extra):
-                    _ht_q.append(f"{_c}=%{{customdata[{_i + 3}]}}<br>")
-                _ht_q.append("<extra></extra>")
                 fig_q.update_traces(
+                    mode="markers+text",
+                    textposition="top center",
+                    textfont=dict(family=FONT_FAMILY, size=9, color=CHART_TEXT),
                     marker=dict(line=dict(width=0.5, color="DarkSlateGrey")),
-                    hovertemplate="".join(_ht_q),
+                    hovertemplate="<b>%{hovertext}</b><extra></extra>",
                 )
                 fig_q.add_hline(
                     y=0,
@@ -1396,8 +1365,8 @@ def main() -> None:
                     font=_plot_base_font(),
                     hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                     height=720,
-                    margin=dict(l=72, r=72, t=88, b=72),
-                    annotations=_quadrant_label_annotations(x_half, y_half, sx, sy),
+                    margin=dict(l=96, r=96, t=130, b=104),
+                    annotations=_quadrant_label_annotations(),
                     xaxis=dict(range=[xr0, xr1], zeroline=False),
                     yaxis=dict(range=[yr0, yr1], zeroline=False),
                     legend=dict(
