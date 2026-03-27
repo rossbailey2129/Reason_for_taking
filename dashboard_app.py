@@ -482,7 +482,7 @@ def _quadrant_axis_half_from_series(
     min_half: float = 1.0,
 ) -> float:
     """
-    Symmetric half-range for one quadrant axis from the **plotted** median-centered
+    Symmetric half-range for one quadrant axis from the **plotted** mean-centered
     values only (same rows as the scatter). Uses max(|min|, |max|), then the larger of
     proportional pad and ``min_pts_pad`` extra percentage points (e.g. 25→~35, 40→~50),
     then tick-friendly snapping.
@@ -499,78 +499,6 @@ def _quadrant_axis_half_from_series(
         min_half,
     )
     return _snap_symmetric_half_for_ticks(half, min_half=min_half)
-
-
-def _quadrant_asinh_scale(
-    centered: pd.Series,
-    *,
-    center_expand: float = 1.0,
-) -> float:
-    """
-    Scale s (in percentage points) for arcsinh(u/s): **smaller s** spreads small |u| more
-    on the chart (more separation near the median). ``center_expand`` divides that scale so
-    values > 1 pull the cloud apart near (0,0); values < 1 compress the center (rare need).
-    """
-    v = pd.to_numeric(centered, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-    if v.empty:
-        return 2.0
-    abs_v = np.abs(v.astype(float))
-    med = float(np.median(abs_v))
-    if med <= 0:
-        med = float(np.max(abs_v)) * 0.1 or 0.5
-    base = float(np.clip(med, 0.25, 12.0))
-    ex = max(0.35, float(center_expand))
-    s = base / ex
-    return float(np.clip(s, 0.1, 18.0))
-
-
-def _quadrant_pct_to_asinh(u: np.ndarray | pd.Series, scale: float) -> np.ndarray:
-    return np.arcsinh(np.asarray(u, dtype=float) / scale)
-
-
-def _quadrant_symmetric_pct_tickvals(half_pct: float, scale: float) -> tuple[list[float], list[str]]:
-    """Axis tick positions in asinh space; labels show original % point deltas."""
-    half_pct = max(float(half_pct), 1e-6)
-    steps = [
-        0,
-        0.25,
-        0.5,
-        1,
-        1.5,
-        2,
-        3,
-        5,
-        7,
-        10,
-        15,
-        20,
-        30,
-        40,
-        50,
-        75,
-        100,
-        150,
-        200,
-    ]
-    cand = sorted({c for s in steps for c in (s, -s) if abs(c) <= half_pct + 1e-9})
-    if len(cand) > 17:
-        keep = {cand[0], cand[-1], 0.0}
-        idx = np.linspace(0, len(cand) - 1, 13, dtype=int)
-        keep.update(cand[i] for i in idx)
-        cand = sorted(keep)
-    tvals = [float(np.arcsinh(c / scale)) for c in cand]
-
-    def _lbl(c: float) -> str:
-        if abs(c) < 1e-9:
-            return "0"
-        a = abs(c)
-        if a >= 10:
-            return f"{c:.0f}"
-        if abs(c - round(c)) < 0.05:
-            return f"{c:.0f}"
-        return f"{c:g}"
-
-    return tvals, [_lbl(c) for c in cand]
 
 
 def _quadrant_label_annotations() -> list[dict]:
@@ -631,9 +559,9 @@ def _quadrant_plot_frame(
 ) -> tuple[pd.DataFrame, float, float]:
     """
     Rows for selected health interests (empty = all), restricted to top-N lowest taxonomies
-    by total REC_COUNT in that slice. Adds ``x_vs_median`` / ``y_vs_median``: share within
-    health interest and share within lowest taxonomy, each minus the **median of the
-    displayed rows** (so (0, 0) is the cohort median on the chart).
+    by total REC_COUNT in that slice. Adds ``x_vs_mean`` / ``y_vs_mean``: share within
+    health interest and share within lowest taxonomy, each minus the **mean of the
+    displayed rows** (so (0, 0) is the cohort average on the chart).
     """
     sub = (
         df[df[HEALTH_COL].isin(selected_interests)]
@@ -648,11 +576,11 @@ def _quadrant_plot_frame(
     plot_df = sub[sub[LEAF_COL].isin(top_leaves)].copy()
     if plot_df.empty:
         return plot_df, float("nan"), float("nan")
-    med_hi = float(plot_df["SHARE_WITHIN_HEALTH_INTEREST"].median())
-    med_lt = float(plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"].median())
-    plot_df["x_vs_median"] = plot_df["SHARE_WITHIN_HEALTH_INTEREST"] - med_hi
-    plot_df["y_vs_median"] = plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"] - med_lt
-    return plot_df, med_hi, med_lt
+    mean_hi = float(plot_df["SHARE_WITHIN_HEALTH_INTEREST"].mean())
+    mean_lt = float(plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"].mean())
+    plot_df["x_vs_mean"] = plot_df["SHARE_WITHIN_HEALTH_INTEREST"] - mean_hi
+    plot_df["y_vs_mean"] = plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"] - mean_lt
+    return plot_df, mean_hi, mean_lt
 
 
 def main() -> None:
@@ -1254,13 +1182,12 @@ def main() -> None:
             _show_plotly_figure_scrollable(fig_hm)
 
     with tab_quadrant:
-        st.subheader("Specificity and confidence (median-centered quadrants)")
+        st.subheader("Specificity and confidence (mean-centered quadrants)")
         st.caption(
             "**X** = share within health interest; **Y** = share within lowest taxonomy. "
-            "Each axis uses **raw shares (%)** shifted so **(0, 0)** is the **median** of the "
-            "points shown (after filters, interest selection, and Top N taxonomies). "
-            "Axes use a **symmetric log–like scale** (arcsinh of Δ% / scale) so values near "
-            "the median stay readable; ordinary log cannot be used because deltas cross zero. "
+            "Each axis plots **difference from the mean share (percentage points)** among the "
+            "points shown, so **(0, 0)** is the **average** of the plotted slice (after filters, "
+            "interest selection, and Top N taxonomies). Axes are **linear**. "
             "Leave **Health interests** empty to include all interests in the slice."
         )
         tab_quad_df = _tab_exclude_expander("quadrant", filtered)
@@ -1298,55 +1225,35 @@ def main() -> None:
                 help="Plotted points are rows for those taxonomies (after interest filter). "
                 f"Maximum is {top_n_max} (taxonomies present in this slice).",
             )
-            plot_df, med_hi, med_lt = _quadrant_plot_frame(
+            plot_df, mean_hi, mean_lt = _quadrant_plot_frame(
                 tab_quad_df, sel_hi_q, int(top_n_quad)
             )
             if plot_df.empty:
                 st.info("No rows for this selection after filters.")
             else:
                 st.caption(
-                    f"**Medians among plotted points:** "
-                    f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**, "
-                    f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}** "
+                    f"**Means among plotted points:** "
+                    f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{mean_hi:.2f}**, "
+                    f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{mean_lt:.2f}** "
                     "(these map to **(0, 0)** on the axes below)."
                 )
-                _q_expand = st.slider(
-                    "Separation near median (both axes)",
-                    min_value=0.6,
-                    max_value=4.0,
-                    value=1.0,
-                    step=0.1,
-                    key="quad_center_expand",
-                    help="Increases spread for small differences vs the median. "
-                    "Top-right mass often reflects real high–high specificity, not a chart bug.",
-                )
-                x_col = "Interest share minus median (% pts)"
-                y_col = "Lowest taxonomy share minus median (% pts)"
+                x_col = "Interest share minus mean (% pts)"
+                y_col = "Lowest taxonomy share minus mean (% pts)"
                 plot_show = plot_df.rename(
-                    columns={"x_vs_median": x_col, "y_vs_median": y_col}
-                )
-                sx = _quadrant_asinh_scale(plot_show[x_col], center_expand=_q_expand)
-                sy = _quadrant_asinh_scale(plot_show[y_col], center_expand=_q_expand)
-                _qx = "_quad_x_asinh"
-                _qy = "_quad_y_asinh"
-                plot_show = plot_show.assign(
-                    **{
-                        _qx: _quadrant_pct_to_asinh(plot_show[x_col], sx),
-                        _qy: _quadrant_pct_to_asinh(plot_show[y_col], sy),
-                    }
+                    columns={"x_vs_mean": x_col, "y_vs_mean": y_col}
                 )
                 fig_q = px.scatter(
                     plot_show,
-                    x=_qx,
-                    y=_qy,
+                    x=x_col,
+                    y=y_col,
                     size="REC_COUNT",
                     color=HEALTH_COL,
                     hover_name=LEAF_COL,
                     labels={
-                        _qx: f"Condition Δ vs median (asinh, s={sx:.2g} % pts)",
-                        _qy: f"Category Δ vs median (asinh, s={sy:.2g} % pts)",
+                        x_col: "Δ vs mean: share within health interest (% pts)",
+                        y_col: "Δ vs mean: share within lowest taxonomy (% pts)",
                     },
-                    opacity=0.55,
+                    opacity=0.65,
                 )
                 fig_q.update_traces(
                     mode="markers",
@@ -1369,12 +1276,8 @@ def main() -> None:
                 )
                 x_half = _quadrant_axis_half_from_series(plot_show[x_col])
                 y_half = _quadrant_axis_half_from_series(plot_show[y_col])
-                xr0 = float(np.arcsinh(-x_half / sx))
-                xr1 = float(np.arcsinh(x_half / sx))
-                yr0 = float(np.arcsinh(-y_half / sy))
-                yr1 = float(np.arcsinh(y_half / sy))
-                x_tv, x_tt = _quadrant_symmetric_pct_tickvals(x_half, sx)
-                y_tv, y_tt = _quadrant_symmetric_pct_tickvals(y_half, sy)
+                xr0, xr1 = -x_half, x_half
+                yr0, yr1 = -y_half, y_half
                 fig_q.update_layout(
                     font=_plot_base_font(),
                     hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
@@ -1391,16 +1294,12 @@ def main() -> None:
                 fig_q.update_xaxes(
                     tickfont=_tick_font(),
                     title="",
-                    tickmode="array",
-                    tickvals=x_tv,
-                    ticktext=x_tt,
+                    ticksuffix="%",
                 )
                 fig_q.update_yaxes(
                     tickfont=_tick_font(),
                     title="",
-                    tickmode="array",
-                    tickvals=y_tv,
-                    ticktext=y_tt,
+                    ticksuffix="%",
                 )
                 st.plotly_chart(fig_q, use_container_width=True)
 
