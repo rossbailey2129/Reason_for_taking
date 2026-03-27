@@ -42,10 +42,9 @@ _SHARE_UI_VERSION = 2
 # Quadrant tab: Top N widget session key (fresh key avoids stale “all taxa” values).
 _QUADRANT_TOP_N_KEY = "quad_top_n_chart"
 _QUAD_PAIR_KEY_SEP = "\x1f"
-# Quadrant: Plotly point selection → hide markers (needs streamlit>=1.35).
+# Quadrant: Plotly point selection toggles text labels (needs streamlit>=1.35).
 _QUAD_PLOTLY_WIDGET_KEY = "quad_scatter_plotly"
-# Multiselect session key; Plotly click-handler merges into this before the widget runs.
-_QUAD_MARKER_HIDE_MS_KEY = "quad_marker_hide_ms"
+_QUAD_HIDDEN_LABEL_PAIRS_KEY = "quad_hidden_label_pairs"
 _QUAD_PLOTLY_LAST_SEL_SIG_KEY = "quad_plotly_selection_sig"
 
 BAR_FILL = "#e6f1fc"
@@ -697,8 +696,8 @@ def _quadrant_selection_signature(points: list[dict]) -> str:
     return json.dumps(parts, default=str)
 
 
-def _quadrant_apply_plotly_marker_hides() -> None:
-    """Append taxonomy×interest pairs from the latest Plotly selection to hidden markers."""
+def _quadrant_apply_plotly_label_toggle() -> None:
+    """Toggle label visibility for taxonomy×interest pairs from the latest Plotly selection."""
     if _QUAD_PLOTLY_WIDGET_KEY not in st.session_state:
         return
     pts = _quadrant_plotly_selection_points(st.session_state[_QUAD_PLOTLY_WIDGET_KEY])
@@ -708,12 +707,16 @@ def _quadrant_apply_plotly_marker_hides() -> None:
     st.session_state[_QUAD_PLOTLY_LAST_SEL_SIG_KEY] = sig
     if not pts:
         return
-    hs = set(st.session_state.get(_QUAD_MARKER_HIDE_MS_KEY) or [])
+    hs = set(st.session_state.get(_QUAD_HIDDEN_LABEL_PAIRS_KEY) or [])
     for pt in pts:
         pk = _pair_key_from_plotly_point(pt)
-        if pk:
+        if not pk:
+            continue
+        if pk in hs:
+            hs.discard(pk)
+        else:
             hs.add(pk)
-    st.session_state[_QUAD_MARKER_HIDE_MS_KEY] = sorted(hs)
+    st.session_state[_QUAD_HIDDEN_LABEL_PAIRS_KEY] = sorted(hs)
 
 
 def main() -> None:
@@ -1378,25 +1381,16 @@ def main() -> None:
                     _pk = f"{_pr[LEAF_COL]}{_QUAD_PAIR_KEY_SEP}{_pr[HEALTH_COL]}"
                     _pair_keys.append(_pk)
                     _pair_labels[_pk] = f"{_pr[LEAF_COL]} — {_pr[HEALTH_COL]}"
-                if _QUAD_MARKER_HIDE_MS_KEY not in st.session_state:
-                    st.session_state[_QUAD_MARKER_HIDE_MS_KEY] = []
-                _quadrant_apply_plotly_marker_hides()
+                if _QUAD_HIDDEN_LABEL_PAIRS_KEY not in st.session_state:
+                    st.session_state[_QUAD_HIDDEN_LABEL_PAIRS_KEY] = []
+                _quadrant_apply_plotly_label_toggle()
                 _quad_show_lbl = st.session_state.get("quad_show_point_labels", True)
-                _quad_hidden_pairs = st.session_state.get("quad_hidden_label_pairs", [])
+                _quad_hidden_pairs = st.session_state.get(_QUAD_HIDDEN_LABEL_PAIRS_KEY, [])
                 x_col = "ln(interest share+1) − median"
                 y_col = "ln(taxonomy share+1) − median"
                 plot_show = plot_df.rename(
                     columns={"x_vs_median_log": x_col, "y_vs_median_log": y_col}
                 )
-                _row_keys_all = (
-                    plot_show[LEAF_COL].astype(str)
-                    + _QUAD_PAIR_KEY_SEP
-                    + plot_show[HEALTH_COL].astype(str)
-                )
-                _marker_hidden = frozenset(
-                    st.session_state.get(_QUAD_MARKER_HIDE_MS_KEY) or []
-                )
-                plot_show = plot_show[~_row_keys_all.isin(_marker_hidden)].copy()
                 _lbl_col = "quad_label_text"
                 _row_keys = (
                     plot_show[LEAF_COL].astype(str)
@@ -1418,118 +1412,94 @@ def main() -> None:
                     for i, h in enumerate(_hi_sorted)
                 }
                 st.caption(
-                    "**Hide markers:** select a point on the chart (Plotly’s point-selection tool), "
-                    "then the app reruns and removes that taxonomy × health interest pair. "
-                    "Use **Hide chart markers** in the expander below to bring pairs back."
+                    "**Labels:** use Plotly’s point-selection tool, select a marker, and the app "
+                    "reruns — that toggles the **text label** for that taxonomy × health interest pair "
+                    "(markers stay). The expander multiselect does the same."
                 )
-                if plot_show.empty:
-                    st.warning(
-                        "All points in this view are hidden. Open the expander and remove pairs "
-                        "from **Hide chart markers** to show them again."
-                    )
-                else:
-                    fig_q = px.scatter(
-                        plot_show,
-                        x=x_col,
-                        y=y_col,
-                        size="REC_COUNT",
-                        color=HEALTH_COL,
-                        text=_lbl_col,
-                        custom_data=[
-                            LEAF_COL,
-                            HEALTH_COL,
-                            "REC_COUNT",
-                            "SHARE_WITHIN_HEALTH_INTEREST",
-                            "SHARE_WITHIN_LOWEST_TAXONOMY",
-                        ],
-                        color_discrete_map=_hi_color_map,
-                        category_orders={HEALTH_COL: _hi_sorted},
-                        labels={
-                            x_col: "Condition focus (vs typical on chart)",
-                            y_col: "Condition reliance (vs typical on chart)",
-                        },
-                        opacity=0.65,
-                    )
-                    fig_q.update_traces(
-                        mode="markers+text",
-                        textposition="top center",
-                        textfont=dict(family=FONT_FAMILY, size=9, color=CHART_TEXT),
-                        marker=dict(line=dict(width=0.5, color="DarkSlateGrey")),
-                        hovertemplate=(
-                            "Taxonomy: <b>%{customdata[0]}</b><br>"
-                            "Health interest: <b>%{customdata[1]}</b><br>"
-                            "Rec count: <b>%{customdata[2]:,.0f}</b><br>"
-                            "Share within health interest: <b>%{customdata[3]:.2f}%</b><br>"
-                            "Share within category: <b>%{customdata[4]:.2f}%</b><extra></extra>"
-                        ),
-                    )
-                    fig_q.add_hline(
-                        y=0,
-                        line_width=1.5,
-                        line_dash="solid",
-                        line_color=CHART_TEXT,
-                        opacity=0.55,
-                    )
-                    fig_q.add_vline(
-                        x=0,
-                        line_width=1.5,
-                        line_dash="solid",
-                        line_color=CHART_TEXT,
-                        opacity=0.55,
-                    )
-                    x_half = _quadrant_axis_half_from_series(
-                        plot_show[x_col],
-                        min_pts_pad=0.08,
-                        min_half=0.02,
-                    )
-                    y_half = _quadrant_axis_half_from_series(
-                        plot_show[y_col],
-                        min_pts_pad=0.08,
-                        min_half=0.02,
-                    )
-                    xr0, xr1 = -x_half, x_half
-                    yr0, yr1 = -y_half, y_half
-                    fig_q.update_layout(
-                        font=_plot_base_font(),
-                        hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
-                        height=720,
-                        margin=dict(l=96, r=96, t=100, b=100),
-                        annotations=_quadrant_label_annotations(),
-                        xaxis=dict(range=[xr0, xr1], zeroline=False),
-                        yaxis=dict(range=[yr0, yr1], zeroline=False),
-                        legend=dict(
-                            title=dict(text="Health interest"),
-                            font=dict(family=FONT_FAMILY, color=CHART_TEXT),
-                        ),
-                    )
-                    fig_q.update_xaxes(tickfont=_tick_font(), title="")
-                    fig_q.update_yaxes(tickfont=_tick_font(), title="")
-                    st.plotly_chart(
-                        fig_q,
-                        key=_QUAD_PLOTLY_WIDGET_KEY,
-                        on_select="rerun",
-                        selection_mode="points",
-                        use_container_width=True,
-                    )
-                _marker_opts = sorted(
-                    set(_pair_keys) | set(st.session_state.get(_QUAD_MARKER_HIDE_MS_KEY) or [])
+                fig_q = px.scatter(
+                    plot_show,
+                    x=x_col,
+                    y=y_col,
+                    size="REC_COUNT",
+                    color=HEALTH_COL,
+                    text=_lbl_col,
+                    custom_data=[
+                        LEAF_COL,
+                        HEALTH_COL,
+                        "REC_COUNT",
+                        "SHARE_WITHIN_HEALTH_INTEREST",
+                        "SHARE_WITHIN_LOWEST_TAXONOMY",
+                    ],
+                    color_discrete_map=_hi_color_map,
+                    category_orders={HEALTH_COL: _hi_sorted},
+                    labels={
+                        x_col: "Condition focus (vs typical on chart)",
+                        y_col: "Condition reliance (vs typical on chart)",
+                    },
+                    opacity=0.65,
                 )
-
-                def _quad_marker_label(k: str) -> str:
-                    if k in _pair_labels:
-                        return _pair_labels[k]
-                    parts = k.split(_QUAD_PAIR_KEY_SEP, 1)
-                    return f"{parts[0]} — {parts[1]}" if len(parts) == 2 else k
-
-                with st.expander("Point labels & chart markers", expanded=False):
-                    st.multiselect(
-                        "Hide chart markers (taxonomy × health interest)",
-                        options=_marker_opts,
-                        format_func=_quad_marker_label,
-                        key=_QUAD_MARKER_HIDE_MS_KEY,
-                        help="Selected pairs are removed from the scatter. "
-                        "Or select points on the chart (point tool) to add pairs here automatically.",
-                    )
+                fig_q.update_traces(
+                    mode="markers+text",
+                    textposition="top center",
+                    textfont=dict(family=FONT_FAMILY, size=9, color=CHART_TEXT),
+                    marker=dict(line=dict(width=0.5, color="DarkSlateGrey")),
+                    hovertemplate=(
+                        "Taxonomy: <b>%{customdata[0]}</b><br>"
+                        "Health interest: <b>%{customdata[1]}</b><br>"
+                        "Rec count: <b>%{customdata[2]:,.0f}</b><br>"
+                        "Share within health interest: <b>%{customdata[3]:.2f}%</b><br>"
+                        "Share within category: <b>%{customdata[4]:.2f}%</b><extra></extra>"
+                    ),
+                )
+                fig_q.add_hline(
+                    y=0,
+                    line_width=1.5,
+                    line_dash="solid",
+                    line_color=CHART_TEXT,
+                    opacity=0.55,
+                )
+                fig_q.add_vline(
+                    x=0,
+                    line_width=1.5,
+                    line_dash="solid",
+                    line_color=CHART_TEXT,
+                    opacity=0.55,
+                )
+                x_half = _quadrant_axis_half_from_series(
+                    plot_show[x_col],
+                    min_pts_pad=0.08,
+                    min_half=0.02,
+                )
+                y_half = _quadrant_axis_half_from_series(
+                    plot_show[y_col],
+                    min_pts_pad=0.08,
+                    min_half=0.02,
+                )
+                xr0, xr1 = -x_half, x_half
+                yr0, yr1 = -y_half, y_half
+                fig_q.update_layout(
+                    font=_plot_base_font(),
+                    hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
+                    height=720,
+                    margin=dict(l=96, r=96, t=100, b=100),
+                    annotations=_quadrant_label_annotations(),
+                    xaxis=dict(range=[xr0, xr1], zeroline=False),
+                    yaxis=dict(range=[yr0, yr1], zeroline=False),
+                    legend=dict(
+                        title=dict(text="Health interest"),
+                        font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+                    ),
+                )
+                fig_q.update_xaxes(tickfont=_tick_font(), title="")
+                fig_q.update_yaxes(tickfont=_tick_font(), title="")
+                st.plotly_chart(
+                    fig_q,
+                    key=_QUAD_PLOTLY_WIDGET_KEY,
+                    on_select="rerun",
+                    selection_mode="points",
+                    use_container_width=True,
+                )
+                with st.expander("Point labels", expanded=False):
                     st.caption(
                         "Turn names on or off, or hide specific taxonomy × health interest pairs. "
                         "Markers stay on the chart."
@@ -1543,10 +1513,10 @@ def main() -> None:
                         "Hide labels for these taxonomy × health interest pairs",
                         options=_pair_keys,
                         format_func=lambda k: _pair_labels[k],
-                        key="quad_hidden_label_pairs",
+                        key=_QUAD_HIDDEN_LABEL_PAIRS_KEY,
                         disabled=not st.session_state.get("quad_show_point_labels", True),
                         help="Select pairs to drop the text label only; the marker stays. "
-                        "Options match the current plotted slice.",
+                        "Selecting a point on the chart (point tool) toggles the same list.",
                     )
 
 
