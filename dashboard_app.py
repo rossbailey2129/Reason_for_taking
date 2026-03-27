@@ -464,8 +464,11 @@ def _tab_exclude_expander(tab_id: str, base: pd.DataFrame) -> pd.DataFrame:
 
 
 def _snap_symmetric_half_for_ticks(half: float, *, min_half: float = 1.0) -> float:
-    """Ceil half to a readable step (1s, then 5s, then 10s) without large jumps."""
+    """Ceil half to a readable step: 0.1s when small, then integers, 5s, 10s."""
     half = max(float(half), min_half)
+    if half < 1.0:
+        step = 0.1
+        return float(max(min_half, math.ceil(half / step - 1e-12) * step))
     if half <= 5:
         return float(max(min_half, math.ceil(half)))
     if half < 100:
@@ -490,7 +493,7 @@ def _quadrant_axis_half_from_series(
         return min_half
     ext = max(abs(float(v.min())), abs(float(v.max())))
     if ext == 0:
-        return max(min_half, 1.0)
+        return float(max(min_half, 0.1 if min_half < 1.0 else 1.0))
     half = max(
         ext * (1.0 + pad_frac),
         ext + min_pts_pad,
@@ -559,9 +562,9 @@ def _quadrant_plot_frame(
     Rows for selected health interests (empty = all), restricted to top-N lowest taxonomies
     by total REC_COUNT in that slice. Uses **precomputed** share columns from the CSV.
 
-    Adds ``x_lift_pct`` / ``y_lift_pct``: multiplicative **lift vs the cohort median** among
-    plotted rows, as ``(share / median − 1) × 100``. So **(0, 0)** means at the median on
-    both axes; **+50** means 1.5× the median share on that axis.
+    **Log baseline fix:** ``x' = ln(x+1)``, ``y' = ln(y+1)`` on share percentages (natural log),
+    then subtract the **median of x'** and **median of y'** among plotted rows. So **(0, 0)**
+    is the cohort median in **log share space** (not the same as raw-share median when skewed).
     """
     sub = (
         df[df[HEALTH_COL].isin(selected_interests)]
@@ -576,14 +579,16 @@ def _quadrant_plot_frame(
     plot_df = sub[sub[LEAF_COL].isin(top_leaves)].copy()
     if plot_df.empty:
         return plot_df, float("nan"), float("nan")
-    med_hi = float(plot_df["SHARE_WITHIN_HEALTH_INTEREST"].median())
-    med_lt = float(plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"].median())
-    if not np.isfinite(med_hi) or not np.isfinite(med_lt) or med_hi <= 0 or med_lt <= 0:
-        return pd.DataFrame(), med_hi, med_lt
-    sh = plot_df["SHARE_WITHIN_HEALTH_INTEREST"].astype(float)
-    sl = plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"].astype(float)
-    plot_df["x_lift_pct"] = (sh / med_hi - 1.0) * 100.0
-    plot_df["y_lift_pct"] = (sl / med_lt - 1.0) * 100.0
+    sh = np.maximum(plot_df["SHARE_WITHIN_HEALTH_INTEREST"].astype(float), 0.0)
+    sl = np.maximum(plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"].astype(float), 0.0)
+    med_hi = float(sh.median())
+    med_lt = float(sl.median())
+    xp = np.log(sh + 1.0)
+    yp = np.log(sl + 1.0)
+    med_xp = float(np.median(xp))
+    med_yp = float(np.median(yp))
+    plot_df["x_vs_median_log"] = xp - med_xp
+    plot_df["y_vs_median_log"] = yp - med_yp
     return plot_df, med_hi, med_lt
 
 
@@ -1186,12 +1191,12 @@ def main() -> None:
             _show_plotly_figure_scrollable(fig_hm)
 
     with tab_quadrant:
-        st.subheader("Specificity and confidence (lift vs median)")
+        st.subheader("Specificity and confidence (log + median-centered)")
         st.caption(
-            "**X** / **Y** use **precomputed** shares from the file (within health interest vs "
-            "within lowest taxonomy). Each axis is **multiplicative lift vs the median** among "
-            "the points plotted: **(share ÷ median − 1) × 100**. So **0** = at the cohort median, "
-            "**+100** = **2×** the median, **−50** = **half** the median. **Linear** axes. "
+            "**X** / **Y** use **precomputed** shares from the file. Each share **x** is mapped "
+            "with **x′ = ln(x+1)** (natural log), then the axis value is **x′ minus the median "
+            "of x′** among plotted points (same for **y**). **(0, 0)** is that **log-space** "
+            "median. Axes are **linear** in those centered log units. "
             "Leave **Health interests** empty to include all interests in the slice."
         )
         tab_quad_df = _tab_exclude_expander("quadrant", filtered)
@@ -1233,23 +1238,18 @@ def main() -> None:
                 tab_quad_df, sel_hi_q, int(top_n_quad)
             )
             if plot_df.empty:
-                if np.isfinite(med_hi) and np.isfinite(med_lt) and (med_hi <= 0 or med_lt <= 0):
-                    st.warning(
-                        "Cannot compute lift: median share on one or both axes is zero or invalid."
-                    )
-                else:
-                    st.info("No rows for this selection after filters.")
+                st.info("No rows for this selection after filters.")
             else:
                 st.caption(
-                    f"**Medians among plotted points (lift baseline):** "
+                    f"**Raw share medians (among plotted points, %):** "
                     f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**, "
-                    f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}** "
-                    "(**0% lift** on an axis = this median share)."
+                    f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**. "
+                    "Chart origin uses **median of ln(share+1)** per axis, not these raw medians."
                 )
-                x_col = "Lift vs median: interest share (% mult.)"
-                y_col = "Lift vs median: taxonomy share (% mult.)"
+                x_col = "ln(interest share+1) − median"
+                y_col = "ln(taxonomy share+1) − median"
                 plot_show = plot_df.rename(
-                    columns={"x_lift_pct": x_col, "y_lift_pct": y_col}
+                    columns={"x_vs_median_log": x_col, "y_vs_median_log": y_col}
                 )
                 fig_q = px.scatter(
                     plot_show,
@@ -1259,8 +1259,8 @@ def main() -> None:
                     color=HEALTH_COL,
                     hover_name=LEAF_COL,
                     labels={
-                        x_col: "Lift vs median — share within health interest ((ratio−1)×100)",
-                        y_col: "Lift vs median — share within lowest taxonomy ((ratio−1)×100)",
+                        x_col: "ln(share within health interest + 1) − cohort median",
+                        y_col: "ln(share within lowest taxonomy + 1) − cohort median",
                     },
                     opacity=0.65,
                 )
@@ -1284,10 +1284,14 @@ def main() -> None:
                     opacity=0.55,
                 )
                 x_half = _quadrant_axis_half_from_series(
-                    plot_show[x_col], min_pts_pad=5.0
+                    plot_show[x_col],
+                    min_pts_pad=0.08,
+                    min_half=0.02,
                 )
                 y_half = _quadrant_axis_half_from_series(
-                    plot_show[y_col], min_pts_pad=5.0
+                    plot_show[y_col],
+                    min_pts_pad=0.08,
+                    min_half=0.02,
                 )
                 xr0, xr1 = -x_half, x_half
                 yr0, yr1 = -y_half, y_half
@@ -1304,16 +1308,8 @@ def main() -> None:
                         font=dict(family=FONT_FAMILY, color=CHART_TEXT),
                     ),
                 )
-                fig_q.update_xaxes(
-                    tickfont=_tick_font(),
-                    title="",
-                    ticksuffix="%",
-                )
-                fig_q.update_yaxes(
-                    tickfont=_tick_font(),
-                    title="",
-                    ticksuffix="%",
-                )
+                fig_q.update_xaxes(tickfont=_tick_font(), title="")
+                fig_q.update_yaxes(tickfont=_tick_font(), title="")
                 st.plotly_chart(fig_q, use_container_width=True)
 
 
