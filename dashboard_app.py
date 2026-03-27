@@ -526,6 +526,29 @@ def _quadrant_leader_radius_px(local_neighbors: int, n_total: int) -> float:
     return float(min(96.0, r))
 
 
+def _quad_local_y_stagger_px(
+    i: int,
+    xs: np.ndarray,
+    ys: np.ndarray,
+    band: float,
+) -> tuple[int, int]:
+    """
+    Among points within ``band`` (data units), sort by y and return pixel offset
+    so labels stack on a vertical column; also return local group size.
+    """
+    b2 = band * band
+    d2 = (xs - xs[i]) ** 2 + (ys - ys[i]) ** 2
+    idxs = np.where(d2 <= b2)[0]
+    nloc = len(idxs)
+    if nloc <= 1:
+        return 0, nloc
+    order = idxs[np.argsort(ys[idxs])]
+    rank = int(np.flatnonzero(order == i)[0])
+    step = float(min(18.0, 10.0 + 0.45 * nloc))
+    ay = (rank - (nloc - 1) / 2.0) * step
+    return int(ay), nloc
+
+
 def _quadrant_leader_label_annotations(
     plot_show: pd.DataFrame,
     dx_col: str,
@@ -534,14 +557,17 @@ def _quadrant_leader_label_annotations(
     max_chars: int = 34,
 ) -> list[dict]:
     """
-    Labels with short leader lines; length scales with **local** point density.
-    Direction: outward from (0,0) through the point, or golden-angle near origin.
-    No label border; light translucent fill only.
+    Taxonomy-only labels (health interest is encoded by point color).
+
+    Sparse areas: short leaders aimed radially from the chart origin.
+
+    Crowded areas (several neighbors nearby): **vertical-plane** layout — labels sit
+    to the left or right of the cohort (split by median x) with pixel offsets, and
+    nearby points are staggered vertically by y-order so text forms readable columns.
     """
     n = len(plot_show)
     if n == 0:
         return []
-    multi_hi = int(plot_show[HEALTH_COL].nunique()) > 1
     xs = plot_show[dx_col].astype(float).to_numpy()
     ys = plot_show[dy_col].astype(float).to_numpy()
     neigh_band = 6.0
@@ -550,37 +576,39 @@ def _quadrant_leader_label_annotations(
     for i in range(n):
         d2 = (xs - xs[i]) ** 2 + (ys - ys[i]) ** 2
         densities.append(int(np.sum(d2 <= neigh_sq)) - 1)
+    median_x = float(np.median(xs))
     fs = int(max(7, min(10, 14 - n // 8)))
-    mchars = max(22, min(max_chars, 36 - n // 6))
+    mchars = max(20, min(max_chars, 40 - n // 5))
     golden = math.pi * (3.0 - math.sqrt(5.0))
     origin_eps = 0.45
+    dense_threshold = 3
+    stagger_band = 8.5
     out: list[dict] = []
     for idx, (_, row) in enumerate(plot_show.iterrows()):
         xi, yi = float(row[dx_col]), float(row[dy_col])
-        h = math.hypot(xi, yi)
-        if h >= origin_eps:
-            ux, uy = xi / h, yi / h
-        else:
-            th = (idx + 0.318) * golden
-            ux, uy = math.cos(th), math.sin(th)
         dens = max(0, densities[idx])
-        if h >= origin_eps and dens >= 4:
-            px, py = -uy, ux
-            wobble = 0.22 * math.sin(1.19 * idx + 0.27 * dens)
-            ux, uy = ux + wobble * px, uy + wobble * py
-            nh = math.hypot(ux, uy) or 1.0
-            ux, uy = ux / nh, uy / nh
         r = _quadrant_leader_radius_px(dens, n)
-        ax_pix = int(r * ux)
-        ay_pix = int(-r * uy)
-        leaf = str(row[LEAF_COL])
-        if multi_hi:
-            hi = str(row[HEALTH_COL])
-            combo = f"{leaf} · {hi}"
+        if dens >= dense_threshold:
+            if xi < median_x:
+                side = -1
+            elif xi > median_x:
+                side = 1
+            else:
+                side = -1 if idx % 2 == 0 else 1
+            ay_stagger, _nloc = _quad_local_y_stagger_px(idx, xs, ys, stagger_band)
+            ax_pix = int(side * r * 1.05)
+            ay_pix = ay_stagger
         else:
-            combo = leaf
-        if len(combo) > mchars:
-            combo = combo[: mchars - 1] + "…"
+            h = math.hypot(xi, yi)
+            if h >= origin_eps:
+                ux, uy = xi / h, yi / h
+            else:
+                th = (idx + 0.318) * golden
+                ux, uy = math.cos(th), math.sin(th)
+            ax_pix = int(r * ux)
+            ay_pix = int(-r * uy)
+        leaf = str(row[LEAF_COL])
+        combo = leaf if len(leaf) <= mchars else leaf[: mchars - 1] + "…"
         out.append(
             {
                 "x": xi,
@@ -1255,7 +1283,9 @@ def main() -> None:
                 st.caption(
                     f"Cohort medians (plotted points): "
                     f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**, "
-                    f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**."
+                    f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**. "
+                    "Labels are **lowest taxonomy** only; **point color** is health interest. "
+                    "Where points bunch, labels shift to left/right columns with vertical spacing."
                 )
                 plot_show = plot_df.rename(
                     columns={
