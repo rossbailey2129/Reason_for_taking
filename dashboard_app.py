@@ -501,10 +501,15 @@ def _quadrant_axis_half_from_series(
     return _snap_symmetric_half_for_ticks(half, min_half=min_half)
 
 
-def _quadrant_asinh_scale(centered: pd.Series) -> float:
+def _quadrant_asinh_scale(
+    centered: pd.Series,
+    *,
+    center_expand: float = 1.0,
+) -> float:
     """
-    Scale s (in percentage points) for arcsinh(u/s): smaller s spreads small |u| more.
-    Uses median |Δ| from the plotted slice, clamped so tiny medians don't explode the transform.
+    Scale s (in percentage points) for arcsinh(u/s): **smaller s** spreads small |u| more
+    on the chart (more separation near the median). ``center_expand`` divides that scale so
+    values > 1 pull the cloud apart near (0,0); values < 1 compress the center (rare need).
     """
     v = pd.to_numeric(centered, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
     if v.empty:
@@ -513,7 +518,10 @@ def _quadrant_asinh_scale(centered: pd.Series) -> float:
     med = float(np.median(abs_v))
     if med <= 0:
         med = float(np.max(abs_v)) * 0.1 or 0.5
-    return float(np.clip(med, 0.35, 12.0))
+    base = float(np.clip(med, 0.25, 12.0))
+    ex = max(0.35, float(center_expand))
+    s = base / ex
+    return float(np.clip(s, 0.1, 18.0))
 
 
 def _quadrant_pct_to_asinh(u: np.ndarray | pd.Series, scale: float) -> np.ndarray:
@@ -1302,13 +1310,23 @@ def main() -> None:
                     f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}** "
                     "(these map to **(0, 0)** on the axes below)."
                 )
+                _q_expand = st.slider(
+                    "Separation near median (both axes)",
+                    min_value=0.6,
+                    max_value=4.0,
+                    value=1.0,
+                    step=0.1,
+                    key="quad_center_expand",
+                    help="Increases spread for small differences vs the median. "
+                    "Top-right mass often reflects real high–high specificity, not a chart bug.",
+                )
                 x_col = "Interest share minus median (% pts)"
                 y_col = "Lowest taxonomy share minus median (% pts)"
                 plot_show = plot_df.rename(
                     columns={"x_vs_median": x_col, "y_vs_median": y_col}
                 )
-                sx = _quadrant_asinh_scale(plot_show[x_col])
-                sy = _quadrant_asinh_scale(plot_show[y_col])
+                sx = _quadrant_asinh_scale(plot_show[x_col], center_expand=_q_expand)
+                sy = _quadrant_asinh_scale(plot_show[y_col], center_expand=_q_expand)
                 _qx = "_quad_x_asinh"
                 _qy = "_quad_y_asinh"
                 plot_show = plot_show.assign(
@@ -1328,7 +1346,7 @@ def main() -> None:
                         _qx: f"Condition Δ vs median (asinh, s={sx:.2g} % pts)",
                         _qy: f"Category Δ vs median (asinh, s={sy:.2g} % pts)",
                     },
-                    opacity=0.72,
+                    opacity=0.55,
                 )
                 fig_q.update_traces(
                     mode="markers",
