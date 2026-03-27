@@ -501,6 +501,57 @@ def _quadrant_axis_half_from_series(
     return _snap_symmetric_half_for_ticks(half, min_half=min_half)
 
 
+def _quadrant_label_annotations(x_half: float, y_half: float) -> list[dict]:
+    """Corner labels in data coordinates (x = condition / interest, y = category / taxonomy)."""
+    inset_x = 0.88
+    inset_y = 0.88
+    fs = 12
+    bg = "rgba(255,255,255,0.72)"
+    common = dict(
+        xref="x",
+        yref="y",
+        showarrow=False,
+        font=dict(family=FONT_FAMILY, size=fs, color=CHART_TEXT),
+        opacity=0.92,
+        bgcolor=bg,
+        borderpad=4,
+    )
+    return [
+        {
+            **common,
+            "x": inset_x * x_half,
+            "y": inset_y * y_half,
+            "xanchor": "right",
+            "yanchor": "top",
+            "text": "High Condition Specificity &<br>High Category Specificity",
+        },
+        {
+            **common,
+            "x": -inset_x * x_half,
+            "y": inset_y * y_half,
+            "xanchor": "left",
+            "yanchor": "top",
+            "text": "Low Condition Specificity &<br>High Category Specificity",
+        },
+        {
+            **common,
+            "x": -inset_x * x_half,
+            "y": -inset_y * y_half,
+            "xanchor": "left",
+            "yanchor": "bottom",
+            "text": "Low Condition Specificity &<br>Low Category Specificity",
+        },
+        {
+            **common,
+            "x": inset_x * x_half,
+            "y": -inset_y * y_half,
+            "xanchor": "right",
+            "yanchor": "bottom",
+            "text": "High Condition Specificity &<br>Low Category Specificity",
+        },
+    ]
+
+
 def _quadrant_plot_frame(
     df: pd.DataFrame,
     selected_interests: list[str],
@@ -1241,6 +1292,7 @@ def main() -> None:
                     hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                     height=720,
                     margin=dict(l=72, r=72, t=88, b=72),
+                    annotations=_quadrant_label_annotations(x_half, y_half),
                     xaxis=dict(range=[xr0, xr1], zeroline=False),
                     yaxis=dict(range=[yr0, yr1], zeroline=False),
                     legend=dict(
