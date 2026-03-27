@@ -552,16 +552,48 @@ def _quadrant_label_annotations() -> list[dict]:
     ]
 
 
+def _quadrant_recompute_shares_from_rec(rows: pd.DataFrame, ref: pd.DataFrame) -> pd.DataFrame:
+    """
+    Replace share columns using REC_COUNT and totals from ``ref``:
+    share within interest H = 100 * rec / sum(rec for H in ref);
+    share within leaf L = 100 * rec / sum(rec for L in ref).
+    So “share within taxonomy” counts uses of L across **all** interests present in ``ref``,
+    not only the quadrant’s interest subset.
+    """
+    if ref.empty or rows.empty:
+        return rows.copy()
+    hi_tot = ref.groupby(HEALTH_COL, as_index=False)["REC_COUNT"].sum().rename(
+        columns={"REC_COUNT": "_hi_den"}
+    )
+    lf_tot = ref.groupby(LEAF_COL, as_index=False)["REC_COUNT"].sum().rename(
+        columns={"REC_COUNT": "_lf_den"}
+    )
+    out = rows.merge(hi_tot, on=HEALTH_COL, how="left").merge(lf_tot, on=LEAF_COL, how="left")
+    rc = out["REC_COUNT"].astype(float)
+    hi_d = out["_hi_den"].replace(0, np.nan).astype(float)
+    lf_d = out["_lf_den"].replace(0, np.nan).astype(float)
+    out["SHARE_WITHIN_HEALTH_INTEREST"] = 100.0 * rc / hi_d
+    out["SHARE_WITHIN_LOWEST_TAXONOMY"] = 100.0 * rc / lf_d
+    out = out.drop(columns=["_hi_den", "_lf_den"])
+    return out
+
+
 def _quadrant_plot_frame(
     df: pd.DataFrame,
     selected_interests: list[str],
     top_n_taxonomies: int,
+    *,
+    share_denominator_ref: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, float, float]:
     """
     Rows for selected health interests (empty = all), restricted to top-N lowest taxonomies
     by total REC_COUNT in that slice. Adds ``x_vs_mean`` / ``y_vs_mean``: share within
     health interest and share within lowest taxonomy, each minus the **mean of the
     displayed rows** (so (0, 0) is the cohort average on the chart).
+
+    If ``share_denominator_ref`` is set, both share columns are **recomputed** from
+    ``REC_COUNT`` using row sums in that reference frame (e.g. full file) so denominators
+    can include pairs outside the quadrant interest filter.
     """
     sub = (
         df[df[HEALTH_COL].isin(selected_interests)]
@@ -576,6 +608,8 @@ def _quadrant_plot_frame(
     plot_df = sub[sub[LEAF_COL].isin(top_leaves)].copy()
     if plot_df.empty:
         return plot_df, float("nan"), float("nan")
+    if share_denominator_ref is not None and not share_denominator_ref.empty:
+        plot_df = _quadrant_recompute_shares_from_rec(plot_df, share_denominator_ref)
     mean_hi = float(plot_df["SHARE_WITHIN_HEALTH_INTEREST"].mean())
     mean_lt = float(plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"].mean())
     plot_df["x_vs_mean"] = plot_df["SHARE_WITHIN_HEALTH_INTEREST"] - mean_hi
@@ -1188,6 +1222,8 @@ def main() -> None:
             "Each axis plots **difference from the mean share (percentage points)** among the "
             "points shown, so **(0, 0)** is the **average** of the plotted slice (after filters, "
             "interest selection, and Top N taxonomies). Axes are **linear**. "
+            "Choose **share denominators** so “within taxonomy” can include recommendations in "
+            "interests **outside** the quadrant pick (see below). "
             "Leave **Health interests** empty to include all interests in the slice."
         )
         tab_quad_df = _tab_exclude_expander("quadrant", filtered)
@@ -1225,8 +1261,31 @@ def main() -> None:
                 help="Plotted points are rows for those taxonomies (after interest filter). "
                 f"Maximum is {top_n_max} (taxonomies present in this slice).",
             )
+            _qd_denom = st.radio(
+                "Share denominators (recomputed from rec counts)",
+                options=("full_file", "sidebar_filtered", "csv_columns"),
+                format_func=lambda m: {
+                    "full_file": "Full CSV — all interests & taxonomies in the file",
+                    "sidebar_filtered": "Sidebar-filtered rows only",
+                    "csv_columns": "Use precomputed share columns from the file",
+                }[m],
+                index=0,
+                key="quad_share_denom_mode",
+                help="For the first two options, shares are 100×rec÷total rec for that "
+                "interest (x) or that taxonomy (y) in the chosen universe. "
+                "Full CSV includes category use in conditions you did not select in the quadrant.",
+            )
+            if _qd_denom == "full_file":
+                _share_ref = df
+            elif _qd_denom == "sidebar_filtered":
+                _share_ref = filtered
+            else:
+                _share_ref = None
             plot_df, mean_hi, mean_lt = _quadrant_plot_frame(
-                tab_quad_df, sel_hi_q, int(top_n_quad)
+                tab_quad_df,
+                sel_hi_q,
+                int(top_n_quad),
+                share_denominator_ref=_share_ref,
             )
             if plot_df.empty:
                 st.info("No rows for this selection after filters.")
