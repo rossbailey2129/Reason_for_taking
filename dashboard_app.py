@@ -460,6 +460,44 @@ def _tab_exclude_expander(tab_id: str, base: pd.DataFrame) -> pd.DataFrame:
     return apply_tab_excludes(base, ex_leaves, ex_interests)
 
 
+def _quadrant_chart_frame(
+    df: pd.DataFrame,
+    selected_interests: list[str],
+    top_n_taxonomies: int,
+) -> tuple[pd.DataFrame, float, float]:
+    """
+    Rows for selected health interests restricted to the top-N lowest taxonomies
+    (by total REC_COUNT in that slice). Adds x_vs_median / y_vs_median as share
+    minus cohort median among those rows (so 0,0 is the median intersection).
+    """
+    if not selected_interests:
+        return pd.DataFrame(), float("nan"), float("nan")
+    sub = df[df[HEALTH_COL].isin(selected_interests)]
+    if sub.empty:
+        return pd.DataFrame(), float("nan"), float("nan")
+    leaf_totals = sub.groupby(LEAF_COL, as_index=False)["REC_COUNT"].sum()
+    n_take = min(max(1, int(top_n_taxonomies)), len(leaf_totals))
+    top_leaves = leaf_totals.nlargest(n_take, "REC_COUNT")[LEAF_COL].tolist()
+    plot_df = sub[sub[LEAF_COL].isin(top_leaves)].copy()
+    if plot_df.empty:
+        return plot_df, float("nan"), float("nan")
+    mx = float(plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"].median())
+    my = float(plot_df["SHARE_WITHIN_HEALTH_INTEREST"].median())
+    plot_df["x_vs_median"] = plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"] - mx
+    plot_df["y_vs_median"] = plot_df["SHARE_WITHIN_HEALTH_INTEREST"] - my
+    return plot_df, mx, my
+
+
+def _symmetric_axis_range(
+    centered: pd.Series, *, min_half_span: float = 5.0, pad_frac: float = 0.12
+) -> tuple[float, float]:
+    """Symmetric [-M, M] around zero for median-centered percentage-point data."""
+    s = centered.astype(float)
+    half = max(abs(float(s.min())), abs(float(s.max())), min_half_span)
+    half *= 1.0 + pad_frac
+    return -half, half
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Taxonomy ↔ Health interest",
@@ -741,13 +779,13 @@ def main() -> None:
         if c in df.columns
     ]
 
-    tab_table, tab_leaf, tab_hi, tab_matrix, tab_scatter = st.tabs(
+    tab_table, tab_leaf, tab_hi, tab_matrix, tab_quadrant = st.tabs(
         [
             "Data table",
             "By lowest taxonomy",
             "By health interest",
             "Heatmap (top pairs)",
-            "Scatter",
+            "Specificity & confidence",
         ]
     )
 
@@ -1058,71 +1096,188 @@ def main() -> None:
             )
             _show_plotly_figure_scrollable(fig_hm)
 
-    with tab_scatter:
-        st.subheader("Share within lowest taxonomy vs within health interest")
-        st.caption("Point size = recommendation count (filtered data).")
-        tab_scatter_df = _tab_exclude_expander("scatter", filtered)
-        if tab_scatter_df.empty:
+    with tab_quadrant:
+        st.subheader("Specificity and confidence (median-centered quadrants)")
+        st.caption(
+            "Choose health interests, then plot the **top** lowest taxonomies by total "
+            "recommendation count in that slice. Axes show each share **minus the median** "
+            "among plotted points, so the crosshairs meet at (0, 0) = median taxonomy "
+            "and interest shares for this cohort."
+        )
+        tab_quad_df = _tab_exclude_expander("quadrant", filtered)
+        if tab_quad_df.empty:
             st.warning("No data after sidebar filters and this tab's excludes.")
         else:
-            max_points = st.slider("Max points to plot", 500, 9000, 4000)
-            sample = tab_scatter_df.nlargest(max_points, "REC_COUNT")
-            hover_map = {
-                HEALTH_COL: True,
-                "REC_COUNT": True,
-                "SHARE_WITHIN_LOWEST_TAXONOMY": ":.2f",
-                "SHARE_WITHIN_HEALTH_INTEREST": ":.2f",
-            }
-            for c in hover_extra:
-                hover_map[c] = True
-            fig_s = px.scatter(
-                sample,
-                x="SHARE_WITHIN_LOWEST_TAXONOMY",
-                y="SHARE_WITHIN_HEALTH_INTEREST",
-                size="REC_COUNT",
-                hover_name=LEAF_COL,
-                hover_data=hover_map,
-                labels={
-                    "SHARE_WITHIN_LOWEST_TAXONOMY": _metric_axis_label(
-                        "SHARE_WITHIN_LOWEST_TAXONOMY"
+            hi_opts_q = sorted_unique(tab_quad_df[HEALTH_COL])
+            sel_hi_q = st.multiselect(
+                "Health interests to include",
+                options=hi_opts_q,
+                default=hi_opts_q[:1] if hi_opts_q else [],
+                key="quad_sel_interests",
+                help="Taxonomies are ranked within these interests only.",
+            )
+            top_n_quad = st.number_input(
+                "Top N lowest taxonomies (by rec count in slice)",
+                1,
+                80,
+                20,
+                key="quad_top_n",
+            )
+            plot_df, med_lt, med_hi = _quadrant_chart_frame(
+                tab_quad_df, sel_hi_q, int(top_n_quad)
+            )
+            if not sel_hi_q:
+                st.info("Select at least one health interest to build the chart.")
+            elif plot_df.empty:
+                st.info("No rows for this selection after filters.")
+            else:
+                st.caption(
+                    f"Cohort medians (plotted points): "
+                    f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**, "
+                    f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**."
+                )
+                plot_show = plot_df.rename(
+                    columns={
+                        "x_vs_median": "Δ Taxonomy share vs median (pct pts)",
+                        "y_vs_median": "Δ Interest share vs median (pct pts)",
+                    }
+                )
+                dx_col = "Δ Taxonomy share vs median (pct pts)"
+                dy_col = "Δ Interest share vs median (pct pts)"
+                hover_map_q: dict = {
+                    LEAF_COL: True,
+                    HEALTH_COL: True,
+                    "REC_COUNT": True,
+                    "SHARE_WITHIN_LOWEST_TAXONOMY": ":.2f",
+                    "SHARE_WITHIN_HEALTH_INTEREST": ":.2f",
+                    dx_col: ":.2f",
+                    dy_col: ":.2f",
+                }
+                for c in hover_extra:
+                    hover_map_q[c] = True
+                fig_q = px.scatter(
+                    plot_show,
+                    x=dx_col,
+                    y=dy_col,
+                    size="REC_COUNT",
+                    color=HEALTH_COL,
+                    hover_name=LEAF_COL,
+                    hover_data=hover_map_q,
+                    labels={
+                        dx_col: "Taxonomy share minus median (% pts)",
+                        dy_col: "Interest share minus median (% pts)",
+                    },
+                    opacity=0.72,
+                )
+                fig_q.update_traces(
+                    marker=dict(line=dict(width=0.5, color="DarkSlateGrey"))
+                )
+                fig_q.add_hline(
+                    y=0,
+                    line_width=1.5,
+                    line_dash="solid",
+                    line_color=CHART_TEXT,
+                    opacity=0.55,
+                )
+                fig_q.add_vline(
+                    x=0,
+                    line_width=1.5,
+                    line_dash="solid",
+                    line_color=CHART_TEXT,
+                    opacity=0.55,
+                )
+                xr0, xr1 = _symmetric_axis_range(plot_show[dx_col])
+                yr0, yr1 = _symmetric_axis_range(plot_show[dy_col])
+                half = max(abs(xr0), abs(xr1), abs(yr0), abs(yr1))
+                xr0, xr1 = -half, half
+                yr0, yr1 = -half, half
+                quad_annotations = [
+                    dict(
+                        text="Higher taxonomy share<br>Higher interest share",
+                        xref="paper",
+                        yref="paper",
+                        x=0.99,
+                        y=0.99,
+                        xanchor="right",
+                        yanchor="top",
+                        showarrow=False,
+                        font=dict(
+                            family=FONT_FAMILY,
+                            size=11,
+                            color=CHART_TEXT,
+                        ),
+                        opacity=0.75,
                     ),
-                    "SHARE_WITHIN_HEALTH_INTEREST": _metric_axis_label(
-                        "SHARE_WITHIN_HEALTH_INTEREST"
+                    dict(
+                        text="Lower taxonomy share<br>Higher interest share",
+                        xref="paper",
+                        yref="paper",
+                        x=0.01,
+                        y=0.99,
+                        xanchor="left",
+                        yanchor="top",
+                        showarrow=False,
+                        font=dict(
+                            family=FONT_FAMILY,
+                            size=11,
+                            color=CHART_TEXT,
+                        ),
+                        opacity=0.75,
                     ),
-                },
-                opacity=0.65,
-            )
-            fig_s.update_traces(marker=dict(line=dict(width=0.5, color="DarkSlateGrey")))
-            xs = sample["SHARE_WITHIN_LOWEST_TAXONOMY"].astype(float)
-            ys = sample["SHARE_WITHIN_HEALTH_INTEREST"].astype(float)
-            sx0, sx1 = _padded_range(
-                float(xs.min()), float(xs.max()), floor=0.0, ceiling=100.0
-            )
-            sy0, sy1 = _padded_range(
-                float(ys.min()), float(ys.max()), floor=0.0, ceiling=100.0
-            )
-            fig_s.update_layout(
-                font=_plot_base_font(),
-                hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
-                height=640,
-                xaxis=dict(
-                    range=[sx0, sx1],
-                    title=_metric_axis_label("SHARE_WITHIN_LOWEST_TAXONOMY"),
-                ),
-                yaxis=dict(
-                    range=[sy0, sy1],
-                    title=_metric_axis_label("SHARE_WITHIN_HEALTH_INTEREST"),
-                ),
-            )
-            fig_s.update_xaxes(
-                tickfont=_tick_font(),
-                title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
-            )
-            fig_s.update_yaxes(
-                tickfont=_tick_font(),
-                title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
-            )
-            st.plotly_chart(fig_s, use_container_width=True)
+                    dict(
+                        text="Lower taxonomy share<br>Lower interest share",
+                        xref="paper",
+                        yref="paper",
+                        x=0.01,
+                        y=0.01,
+                        xanchor="left",
+                        yanchor="bottom",
+                        showarrow=False,
+                        font=dict(
+                            family=FONT_FAMILY,
+                            size=11,
+                            color=CHART_TEXT,
+                        ),
+                        opacity=0.75,
+                    ),
+                    dict(
+                        text="Higher taxonomy share<br>Lower interest share",
+                        xref="paper",
+                        yref="paper",
+                        x=0.99,
+                        y=0.01,
+                        xanchor="right",
+                        yanchor="bottom",
+                        showarrow=False,
+                        font=dict(
+                            family=FONT_FAMILY,
+                            size=11,
+                            color=CHART_TEXT,
+                        ),
+                        opacity=0.75,
+                    ),
+                ]
+                fig_q.update_layout(
+                    font=_plot_base_font(),
+                    hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
+                    height=680,
+                    xaxis=dict(range=[xr0, xr1], zeroline=False),
+                    yaxis=dict(range=[yr0, yr1], zeroline=False, scaleanchor="x", scaleratio=1),
+                    annotations=quad_annotations,
+                    legend=dict(
+                        title=dict(text="Health interest"),
+                        font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+                    ),
+                )
+                fig_q.update_xaxes(
+                    tickfont=_tick_font(),
+                    title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+                )
+                fig_q.update_yaxes(
+                    tickfont=_tick_font(),
+                    title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+                )
+                st.plotly_chart(fig_q, use_container_width=True)
 
 
 if __name__ == "__main__":
