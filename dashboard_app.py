@@ -5,6 +5,7 @@ Run: streamlit run dashboard_app.py
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
@@ -466,13 +467,15 @@ def _quadrant_chart_frame(
     top_n_taxonomies: int,
 ) -> tuple[pd.DataFrame, float, float]:
     """
-    Rows for selected health interests restricted to the top-N lowest taxonomies
-    (by total REC_COUNT in that slice). Adds x_vs_median / y_vs_median as share
-    minus cohort median among those rows (so 0,0 is the median intersection).
+    Rows for selected health interests (empty list = all interests in ``df``)
+    restricted to the top-N lowest taxonomies by total REC_COUNT in that slice.
+    Adds x_vs_median / y_vs_median as share minus cohort median among those rows.
     """
-    if not selected_interests:
-        return pd.DataFrame(), float("nan"), float("nan")
-    sub = df[df[HEALTH_COL].isin(selected_interests)]
+    sub = (
+        df[df[HEALTH_COL].isin(selected_interests)]
+        if selected_interests
+        else df
+    )
     if sub.empty:
         return pd.DataFrame(), float("nan"), float("nan")
     leaf_totals = sub.groupby(LEAF_COL, as_index=False)["REC_COUNT"].sum()
@@ -496,6 +499,63 @@ def _symmetric_axis_range(
     half = max(abs(float(s.min())), abs(float(s.max())), min_half_span)
     half *= 1.0 + pad_frac
     return -half, half
+
+
+def _quadrant_leader_label_annotations(
+    plot_show: pd.DataFrame,
+    dx_col: str,
+    dy_col: str,
+    *,
+    max_chars: int = 34,
+) -> list[dict]:
+    """
+    One annotation per point: label with arrow from label to marker (pixel offset
+    fans around the point to reduce overlap).
+    """
+    n = len(plot_show)
+    if n == 0:
+        return []
+    multi_hi = int(plot_show[HEALTH_COL].nunique()) > 1
+    base_r = float(min(88.0, max(40.0, 560.0 / max(n, 1))))
+    fs = int(max(8, min(11, 15 - n // 10)))
+    out: list[dict] = []
+    for idx, (_, row) in enumerate(plot_show.iterrows()):
+        ang = 2 * math.pi * (idx + 0.41) / max(n, 1)
+        ax_pix = int(base_r * math.cos(ang))
+        ay_pix = int(-base_r * math.sin(ang))
+        leaf = str(row[LEAF_COL])
+        if multi_hi:
+            hi = str(row[HEALTH_COL])
+            combo = f"{leaf} · {hi}"
+        else:
+            combo = leaf
+        if len(combo) > max_chars:
+            combo = combo[: max_chars - 1] + "…"
+        out.append(
+            {
+                "x": float(row[dx_col]),
+                "y": float(row[dy_col]),
+                "xref": "x",
+                "yref": "y",
+                "text": combo,
+                "showarrow": True,
+                "arrowhead": 2,
+                "arrowsize": 1,
+                "arrowwidth": 1,
+                "arrowcolor": CHART_TEXT,
+                "axref": "pixel",
+                "ayref": "pixel",
+                "ax": ax_pix,
+                "ay": ay_pix,
+                "font": dict(family=FONT_FAMILY, size=fs, color=CHART_TEXT),
+                "align": "center",
+                "bgcolor": "rgba(255,255,255,0.88)",
+                "bordercolor": CHART_TEXT,
+                "borderwidth": 1,
+                "borderpad": 3,
+            }
+        )
+    return out
 
 
 def main() -> None:
@@ -1099,10 +1159,11 @@ def main() -> None:
     with tab_quadrant:
         st.subheader("Specificity and confidence (median-centered quadrants)")
         st.caption(
-            "Choose health interests, then plot the **top** lowest taxonomies by total "
-            "recommendation count in that slice. Axes show each share **minus the median** "
-            "among plotted points, so the crosshairs meet at (0, 0) = median taxonomy "
-            "and interest shares for this cohort."
+            "Leave **health interests** empty to use all interests in the filtered data, "
+            "or narrow to specific ones. **Top N** lowest taxonomies are chosen by total "
+            "recommendation count in that slice (default N = all taxonomies in the slice). "
+            "Axes show each share **minus the median** among plotted points; (0, 0) is "
+            "that cohort’s median taxonomy and interest shares."
         )
         tab_quad_df = _tab_exclude_expander("quadrant", filtered)
         if tab_quad_df.empty:
@@ -1110,25 +1171,36 @@ def main() -> None:
         else:
             hi_opts_q = sorted_unique(tab_quad_df[HEALTH_COL])
             sel_hi_q = st.multiselect(
-                "Health interests to include",
+                "Health interests (empty = all)",
                 options=hi_opts_q,
-                default=hi_opts_q[:1] if hi_opts_q else [],
+                default=[],
                 key="quad_sel_interests",
-                help="Taxonomies are ranked within these interests only.",
+                help="Taxonomies are ranked using only rows for the selected interests.",
             )
+            n_leaf_unique = max(1, len(sorted_unique(tab_quad_df[LEAF_COL])))
+            top_n_max = max(80, n_leaf_unique)
+            if "quad_top_n" in st.session_state:
+                try:
+                    cur = int(st.session_state.quad_top_n)
+                    if cur > top_n_max:
+                        st.session_state.quad_top_n = top_n_max
+                    elif cur < 1:
+                        st.session_state.quad_top_n = 1
+                except (TypeError, ValueError):
+                    st.session_state.quad_top_n = min(top_n_max, n_leaf_unique)
             top_n_quad = st.number_input(
-                "Top N lowest taxonomies (by rec count in slice)",
+                "Top N lowest taxonomies (by total rec count in slice)",
                 1,
-                80,
-                20,
+                top_n_max,
+                n_leaf_unique,
                 key="quad_top_n",
+                help="Lower N to focus on the busiest taxonomies; max includes every "
+                "lowest taxonomy present in the slice.",
             )
             plot_df, med_lt, med_hi = _quadrant_chart_frame(
                 tab_quad_df, sel_hi_q, int(top_n_quad)
             )
-            if not sel_hi_q:
-                st.info("Select at least one health interest to build the chart.")
-            elif plot_df.empty:
+            if plot_df.empty:
                 st.info("No rows for this selection after filters.")
             else:
                 st.caption(
@@ -1191,6 +1263,9 @@ def main() -> None:
                 half = max(abs(xr0), abs(xr1), abs(yr0), abs(yr1))
                 xr0, xr1 = -half, half
                 yr0, yr1 = -half, half
+                point_ann = _quadrant_leader_label_annotations(
+                    plot_show, dx_col, dy_col
+                )
                 quad_annotations = [
                     dict(
                         text="Higher taxonomy share<br>Higher interest share",
@@ -1260,10 +1335,11 @@ def main() -> None:
                 fig_q.update_layout(
                     font=_plot_base_font(),
                     hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
-                    height=680,
+                    height=720,
+                    margin=dict(l=72, r=72, t=88, b=72),
                     xaxis=dict(range=[xr0, xr1], zeroline=False),
                     yaxis=dict(range=[yr0, yr1], zeroline=False, scaleanchor="x", scaleratio=1),
-                    annotations=quad_annotations,
+                    annotations=list(quad_annotations) + point_ann,
                     legend=dict(
                         title=dict(text="Health interest"),
                         font=dict(family=FONT_FAMILY, color=CHART_TEXT),
