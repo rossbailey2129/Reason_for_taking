@@ -5,7 +5,6 @@ Run: streamlit run dashboard_app.py
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 import numpy as np
@@ -38,8 +37,6 @@ SHARE_COLS = frozenset(
 )
 # Bump when in-memory scale for share columns changes (invalidates old 0–1 slider state).
 _SHARE_UI_VERSION = 2
-# Quadrant "Top N" widget session key; bump to reset stale values (e.g. old default = all taxa).
-_QUADRANT_TOP_N_STATE_KEY = "quad_top_n_v3"
 
 BAR_FILL = "#e6f1fc"
 CHART_TEXT = "#36485c"
@@ -463,133 +460,6 @@ def _tab_exclude_expander(tab_id: str, base: pd.DataFrame) -> pd.DataFrame:
     return apply_tab_excludes(base, ex_leaves, ex_interests)
 
 
-def _quadrant_chart_frame(
-    df: pd.DataFrame,
-    selected_interests: list[str],
-    top_n_taxonomies: int,
-) -> tuple[pd.DataFrame, float, float]:
-    """
-    Rows for selected health interests (empty list = all interests in ``df``)
-    restricted to the top-N lowest taxonomies by total REC_COUNT in that slice.
-    Adds x_vs_median / y_vs_median as share minus cohort median among those rows.
-    """
-    sub = (
-        df[df[HEALTH_COL].isin(selected_interests)]
-        if selected_interests
-        else df
-    )
-    if sub.empty:
-        return pd.DataFrame(), float("nan"), float("nan")
-    leaf_totals = sub.groupby(LEAF_COL, as_index=False)["REC_COUNT"].sum()
-    n_take = min(max(1, int(top_n_taxonomies)), len(leaf_totals))
-    top_leaves = leaf_totals.nlargest(n_take, "REC_COUNT")[LEAF_COL].tolist()
-    plot_df = sub[sub[LEAF_COL].isin(top_leaves)].copy()
-    if plot_df.empty:
-        return plot_df, float("nan"), float("nan")
-    mx = float(plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"].median())
-    my = float(plot_df["SHARE_WITHIN_HEALTH_INTEREST"].median())
-    plot_df["x_vs_median"] = plot_df["SHARE_WITHIN_LOWEST_TAXONOMY"] - mx
-    plot_df["y_vs_median"] = plot_df["SHARE_WITHIN_HEALTH_INTEREST"] - my
-    return plot_df, mx, my
-
-
-def _symmetric_axis_range(
-    centered: pd.Series, *, min_half_span: float = 5.0, pad_frac: float = 0.12
-) -> tuple[float, float]:
-    """Symmetric [-M, M] around zero for median-centered percentage-point data."""
-    s = centered.astype(float)
-    half = max(abs(float(s.min())), abs(float(s.max())), min_half_span)
-    half *= 1.0 + pad_frac
-    return -half, half
-
-
-def _quadrant_point_label_annotations(
-    plot_show: pd.DataFrame,
-    dx_col: str,
-    dy_col: str,
-    *,
-    max_chars: int = 30,
-) -> list[dict]:
-    """
-    Lowest-taxonomy labels on the line through (0, 0) and the point, **between** the
-    intercept and the marker. Plotly draws the arrow from text → point, so the leader
-    follows the same slope as (0,0)→(x,y) but points **away from the intercept** toward
-    the bubble. Length varies linearly by polar sort rank, plus rec-count and stack bumps.
-    """
-    n = len(plot_show)
-    if n == 0:
-        return []
-    xs = plot_show[dx_col].astype(float).to_numpy()
-    ys = plot_show[dy_col].astype(float).to_numpy()
-    rc = plot_show["REC_COUNT"].astype(float).to_numpy()
-    rc_max = float(np.nanmax(rc)) if n else 1.0
-    if rc_max <= 0:
-        rc_max = 1.0
-    fs = int(max(7, min(10, 14 - n // 8)))
-    mchars = max(16, min(max_chars, 36 - n // 6))
-
-    stack_ix = np.zeros(n, dtype=int)
-    seen_xy: dict[tuple[float, float], int] = {}
-    for i in range(n):
-        key = (round(float(xs[i]), 3), round(float(ys[i]), 3))
-        stack_ix[i] = seen_xy.get(key, 0)
-        seen_xy[key] = seen_xy.get(key, 0) + 1
-
-    order = list(range(n))
-    order.sort(key=lambda j: (math.atan2(ys[j], xs[j]), math.hypot(xs[j], ys[j])))
-    length_rank = {j: k for k, j in enumerate(order)}
-
-    r_lo, r_hi = 34.0, 92.0
-    out: list[dict] = []
-    for i in range(n):
-        xi, yi = float(xs[i]), float(ys[i])
-        h = math.hypot(xi, yi)
-        if h < 1e-12:
-            theta = (i * 2.3999632297286533) % (2.0 * math.pi)
-        else:
-            theta = math.atan2(yi, xi)
-        # Pixel offset toward (0,0) from the marker: arrow (label→point) continues the
-        # ray from intercept through the point, visually opposing the origin.
-        u_ax = -math.cos(theta)
-        u_ay = math.sin(theta)
-
-        rk = length_rank[i]
-        if n <= 1:
-            r = 0.5 * (r_lo + r_hi)
-        else:
-            r = r_lo + (r_hi - r_lo) * (rk / (n - 1))
-        r += 8.0 * (float(rc[i]) / rc_max)
-        r += 12.0 * float(stack_ix[i])
-        r = min(118.0, r)
-
-        leaf = str(plot_show.iloc[i][LEAF_COL])
-        combo = leaf if len(leaf) <= mchars else leaf[: mchars - 1] + "…"
-        out.append(
-            {
-                "x": xi,
-                "y": yi,
-                "xref": "x",
-                "yref": "y",
-                "text": combo,
-                "showarrow": True,
-                "arrowhead": 2,
-                "arrowsize": 0.85,
-                "arrowwidth": 0.75,
-                "arrowcolor": CHART_TEXT,
-                "axref": "pixel",
-                "ayref": "pixel",
-                "ax": int(r * u_ax),
-                "ay": int(r * u_ay),
-                "font": dict(family=FONT_FAMILY, size=fs, color=CHART_TEXT),
-                "align": "center",
-                "bgcolor": "rgba(255,255,255,0.82)",
-                "borderwidth": 0,
-                "borderpad": 2,
-            }
-        )
-    return out
-
-
 def main() -> None:
     st.set_page_config(
         page_title="Taxonomy ↔ Health interest",
@@ -871,13 +741,12 @@ def main() -> None:
         if c in df.columns
     ]
 
-    tab_table, tab_leaf, tab_hi, tab_matrix, tab_quadrant = st.tabs(
+    tab_table, tab_leaf, tab_hi, tab_matrix = st.tabs(
         [
             "Data table",
             "By lowest taxonomy",
             "By health interest",
             "Heatmap (top pairs)",
-            "Specificity & confidence",
         ]
     )
 
@@ -1187,150 +1056,6 @@ def main() -> None:
                 margin=dict(l=200, b=_heatmap_bottom_margin(n_cols_hm)),
             )
             _show_plotly_figure_scrollable(fig_hm)
-
-    with tab_quadrant:
-        st.subheader("Specificity and confidence (median-centered quadrants)")
-        st.caption(
-            "Leave **health interests** empty to use all interests in the filtered data, "
-            "or narrow to specific ones. **Top N** lowest taxonomies are chosen by total "
-            "recommendation count in that slice (default **N = 20** taxonomies). "
-            "Axes show each share **minus the median** among plotted points; (0, 0) is "
-            "that cohort’s median taxonomy and interest shares."
-        )
-        tab_quad_df = _tab_exclude_expander("quadrant", filtered)
-        if tab_quad_df.empty:
-            st.warning("No data after sidebar filters and this tab's excludes.")
-        else:
-            hi_opts_q = sorted_unique(tab_quad_df[HEALTH_COL])
-            sel_hi_q = st.multiselect(
-                "Health interests (empty = all)",
-                options=hi_opts_q,
-                default=[],
-                key="quad_sel_interests",
-                help="Taxonomies are ranked using only rows for the selected interests.",
-            )
-            n_leaf_unique = max(1, len(sorted_unique(tab_quad_df[LEAF_COL])))
-            # Max = taxonomies that exist in this slice (not a floor of 80 — that made
-            # stale session values clamp to 80 when fewer than 80 taxa existed).
-            top_n_max = n_leaf_unique
-            quad_top_n_default = min(20, n_leaf_unique)
-            _qnk = _QUADRANT_TOP_N_STATE_KEY
-            # Streamlit ignores number_input's default when the key already exists; old keys
-            # could still hold 440 (= all taxa). Initialize missing key to 20; clamp existing.
-            if _qnk not in st.session_state:
-                st.session_state[_qnk] = quad_top_n_default
-            else:
-                try:
-                    cur = int(st.session_state[_qnk])
-                    if cur > top_n_max:
-                        st.session_state[_qnk] = top_n_max
-                    elif cur < 1:
-                        st.session_state[_qnk] = 1
-                except (TypeError, ValueError):
-                    st.session_state[_qnk] = quad_top_n_default
-            top_n_quad = st.number_input(
-                "Top N lowest taxonomies (by total rec count in slice)",
-                min_value=1,
-                max_value=top_n_max,
-                key=_qnk,
-                help="Lower N to focus on the busiest taxonomies; max includes every "
-                "lowest taxonomy present in the slice.",
-            )
-            plot_df, med_lt, med_hi = _quadrant_chart_frame(
-                tab_quad_df, sel_hi_q, int(top_n_quad)
-            )
-            if plot_df.empty:
-                st.info("No rows for this selection after filters.")
-            else:
-                st.caption(
-                    f"Cohort medians (plotted points): "
-                    f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**, "
-                    f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**. "
-                    "**Point color** is health interest. Labels sit **between (0, 0) and each point** "
-                    "on the same line, so leaders run **from the label toward the bubble**, away from "
-                    "the intercept; lengths step **linearly** by angle/distance sort (plus rec count "
-                    "and stacked points)."
-                )
-                plot_show = plot_df.rename(
-                    columns={
-                        "x_vs_median": "Δ Taxonomy share vs median (pct pts)",
-                        "y_vs_median": "Δ Interest share vs median (pct pts)",
-                    }
-                )
-                dx_col = "Δ Taxonomy share vs median (pct pts)"
-                dy_col = "Δ Interest share vs median (pct pts)"
-                hover_map_q: dict = {
-                    LEAF_COL: True,
-                    HEALTH_COL: True,
-                    "REC_COUNT": True,
-                    "SHARE_WITHIN_LOWEST_TAXONOMY": ":.2f",
-                    "SHARE_WITHIN_HEALTH_INTEREST": ":.2f",
-                    dx_col: ":.2f",
-                    dy_col: ":.2f",
-                }
-                for c in hover_extra:
-                    hover_map_q[c] = True
-                fig_q = px.scatter(
-                    plot_show,
-                    x=dx_col,
-                    y=dy_col,
-                    size="REC_COUNT",
-                    color=HEALTH_COL,
-                    hover_name=LEAF_COL,
-                    hover_data=hover_map_q,
-                    labels={
-                        dx_col: "Taxonomy share minus median (% pts)",
-                        dy_col: "Interest share minus median (% pts)",
-                    },
-                    opacity=0.72,
-                )
-                fig_q.update_traces(
-                    marker=dict(line=dict(width=0.5, color="DarkSlateGrey"))
-                )
-                fig_q.add_hline(
-                    y=0,
-                    line_width=1.5,
-                    line_dash="solid",
-                    line_color=CHART_TEXT,
-                    opacity=0.55,
-                )
-                fig_q.add_vline(
-                    x=0,
-                    line_width=1.5,
-                    line_dash="solid",
-                    line_color=CHART_TEXT,
-                    opacity=0.55,
-                )
-                xr0, xr1 = _symmetric_axis_range(plot_show[dx_col])
-                yr0, yr1 = _symmetric_axis_range(plot_show[dy_col])
-                half = max(abs(xr0), abs(xr1), abs(yr0), abs(yr1))
-                xr0, xr1 = -half, half
-                yr0, yr1 = -half, half
-                quad_labels = _quadrant_point_label_annotations(
-                    plot_show, dx_col, dy_col
-                )
-                fig_q.update_layout(
-                    font=_plot_base_font(),
-                    hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
-                    height=720,
-                    margin=dict(l=72, r=72, t=88, b=72),
-                    xaxis=dict(range=[xr0, xr1], zeroline=False),
-                    yaxis=dict(range=[yr0, yr1], zeroline=False, scaleanchor="x", scaleratio=1),
-                    annotations=quad_labels,
-                    legend=dict(
-                        title=dict(text="Health interest"),
-                        font=dict(family=FONT_FAMILY, color=CHART_TEXT),
-                    ),
-                )
-                fig_q.update_xaxes(
-                    tickfont=_tick_font(),
-                    title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
-                )
-                fig_q.update_yaxes(
-                    tickfont=_tick_font(),
-                    title_font=dict(family=FONT_FAMILY, color=CHART_TEXT),
-                )
-                st.plotly_chart(fig_q, use_container_width=True)
 
 
 if __name__ == "__main__":
