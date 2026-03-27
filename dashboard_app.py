@@ -501,6 +501,31 @@ def _symmetric_axis_range(
     return -half, half
 
 
+def _quadrant_leader_radius_px(local_neighbors: int, n_total: int) -> float:
+    """
+    Leader length (pixels): short when few nearby points, longer only when crowded.
+    Isolated points stay close to the marker; dense pockets extend modestly.
+    """
+    d = max(0, int(local_neighbors))
+    if d <= 0:
+        r = 24.0
+    elif d == 1:
+        r = 30.0
+    elif d <= 3:
+        r = 34.0 + 5.5 * (d - 1)
+    elif d <= 6:
+        r = 45.0 + 4.0 * (d - 3)
+    elif d <= 10:
+        r = 57.0 + 3.0 * (d - 6)
+    else:
+        r = min(92.0, 69.0 + 2.0 * (d - 10))
+    if n_total > 50:
+        r += 3.0
+    if n_total > 80:
+        r += 4.0
+    return float(min(96.0, r))
+
+
 def _quadrant_leader_label_annotations(
     plot_show: pd.DataFrame,
     dx_col: str,
@@ -509,11 +534,9 @@ def _quadrant_leader_label_annotations(
     max_chars: int = 34,
 ) -> list[dict]:
     """
-    Labels with leader lines to each point. Placement reduces overlap by:
-    (1) offset direction = outward from chart origin (0,0) through the point when
-        far enough from the origin (spreads radially instead of piling on one side);
-    (2) golden-angle directions for points very close to the origin;
-    (3) longer leaders where many neighbors fall within a small data-radius.
+    Labels with short leader lines; length scales with **local** point density.
+    Direction: outward from (0,0) through the point, or golden-angle near origin.
+    No label border; light translucent fill only.
     """
     n = len(plot_show)
     if n == 0:
@@ -521,18 +544,14 @@ def _quadrant_leader_label_annotations(
     multi_hi = int(plot_show[HEALTH_COL].nunique()) > 1
     xs = plot_show[dx_col].astype(float).to_numpy()
     ys = plot_show[dy_col].astype(float).to_numpy()
-    # Neighbor density in median-centered %pt space (same units as axes).
-    neigh_band = 7.0
+    neigh_band = 6.0
     neigh_sq = neigh_band**2
     densities: list[int] = []
     for i in range(n):
         d2 = (xs - xs[i]) ** 2 + (ys - ys[i]) ** 2
         densities.append(int(np.sum(d2 <= neigh_sq)) - 1)
-    # Base leader length (px); longer when many points or tight clusters.
-    r0 = float(max(64.0, min(168.0, 620.0 / math.sqrt(max(n, 1)))))
     fs = int(max(7, min(10, 14 - n // 8)))
     mchars = max(22, min(max_chars, 36 - n // 6))
-    borderpad = 2 if n > 28 else 3
     golden = math.pi * (3.0 - math.sqrt(5.0))
     origin_eps = 0.45
     out: list[dict] = []
@@ -545,16 +564,13 @@ def _quadrant_leader_label_annotations(
             th = (idx + 0.318) * golden
             ux, uy = math.cos(th), math.sin(th)
         dens = max(0, densities[idx])
-        # Spread labels that share nearly the same outward ray (same quadrant wedge).
-        if h >= origin_eps and dens >= 3:
+        if h >= origin_eps and dens >= 4:
             px, py = -uy, ux
-            wobble = 0.42 * math.sin(1.19 * idx + 0.31 * dens)
+            wobble = 0.22 * math.sin(1.19 * idx + 0.27 * dens)
             ux, uy = ux + wobble * px, uy + wobble * py
             nh = math.hypot(ux, uy) or 1.0
             ux, uy = ux / nh, uy / nh
-        stretch = 1.0 + 0.14 * min(dens, 12) + (0.22 if dens >= 6 else 0.0)
-        ring = 1.0 + 0.12 * (idx % 3) if dens >= 5 else 1.0
-        r = r0 * stretch * ring
+        r = _quadrant_leader_radius_px(dens, n)
         ax_pix = int(r * ux)
         ay_pix = int(-r * uy)
         leaf = str(row[LEAF_COL])
@@ -574,8 +590,8 @@ def _quadrant_leader_label_annotations(
                 "text": combo,
                 "showarrow": True,
                 "arrowhead": 2,
-                "arrowsize": 1,
-                "arrowwidth": 1,
+                "arrowsize": 0.85,
+                "arrowwidth": 0.75,
                 "arrowcolor": CHART_TEXT,
                 "axref": "pixel",
                 "ayref": "pixel",
@@ -583,10 +599,9 @@ def _quadrant_leader_label_annotations(
                 "ay": ay_pix,
                 "font": dict(family=FONT_FAMILY, size=fs, color=CHART_TEXT),
                 "align": "center",
-                "bgcolor": "rgba(255,255,255,0.82)",
-                "bordercolor": CHART_TEXT,
-                "borderwidth": 1,
-                "borderpad": borderpad,
+                "bgcolor": "rgba(255,255,255,0.78)",
+                "borderwidth": 0,
+                "borderpad": 2,
             }
         )
     return out
