@@ -6,6 +6,7 @@ Run: streamlit run dashboard_app.py
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -540,30 +541,6 @@ def _local_centroids(xs: np.ndarray, ys: np.ndarray, band: float) -> tuple[np.nd
     return lcx, lcy
 
 
-def _inner_depth_ranks(
-    xs: np.ndarray,
-    ys: np.ndarray,
-    lcx: np.ndarray,
-    lcy: np.ndarray,
-    wide: float = 15.0,
-) -> np.ndarray:
-    """
-    Among points within ``wide`` data units of each point, rank by distance to that
-    point's local centroid (0 = deepest inside the blob). Used to push inner labels
-    farther out.
-    """
-    n = len(xs)
-    w2 = wide * wide
-    ranks = np.zeros(n, dtype=int)
-    for i in range(n):
-        mask = (xs - xs[i]) ** 2 + (ys - ys[i]) ** 2 <= w2
-        idxs = np.flatnonzero(mask)
-        dcent = (xs[idxs] - lcx[i]) ** 2 + (ys[idxs] - lcy[i]) ** 2
-        order = idxs[np.argsort(dcent)]
-        ranks[i] = int(np.flatnonzero(order == i)[0])
-    return ranks
-
-
 def _coord_stack_indices(xs: np.ndarray, ys: np.ndarray, nd: int = 2) -> np.ndarray:
     """0,1,2,... for identical rounded (x,y) so stacked points get staggered radius."""
     n = len(xs)
@@ -581,13 +558,9 @@ def _octant_leader_radius_px(
     n_total: int,
     *,
     rec_norm: float,
-    inner_depth: int,
     coord_stack: int,
 ) -> float:
-    """
-    Pixel distance marker → label: crowding, bubble size, depth inside a dense blob,
-    and duplicate-coordinate stack offset.
-    """
+    """Pixel distance for **singleton** points (not in a multi-point link cluster)."""
     d = max(0, int(local_neighbors))
     r = 42.0 + 4.2 * min(d, 14)
     r *= 1.0 + 0.065 * min(d, 16)
@@ -598,7 +571,6 @@ def _octant_leader_radius_px(
     if n_total > 90:
         r += 6.0
     r += 8.0 * rec_norm + 10.0 * (rec_norm**1.35)
-    r *= 1.0 + 0.125 * min(int(inner_depth), 22)
     if d >= 11:
         r *= 1.0 + 0.045 * min(d - 11, 14)
     if d >= 16:
@@ -607,50 +579,133 @@ def _octant_leader_radius_px(
     return float(min(132.0, r))
 
 
-def _assign_octant_slots(
+def _link_cluster_ids(xs: np.ndarray, ys: np.ndarray, link_dist: float) -> np.ndarray:
+    """Union-find: points within ``link_dist`` (data units) share a cluster id."""
+    n = len(xs)
+    parent = np.arange(n, dtype=int)
+
+    def find(a: int) -> int:
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    d2 = link_dist * link_dist
+    for i in range(n):
+        for j in range(i + 1, n):
+            if (xs[i] - xs[j]) ** 2 + (ys[i] - ys[j]) ** 2 <= d2:
+                union(i, j)
+    roots: dict[int, int] = {}
+    cid = np.zeros(n, dtype=int)
+    nxt = 0
+    for i in range(n):
+        r = find(i)
+        if r not in roots:
+            roots[r] = nxt
+            nxt += 1
+        cid[i] = roots[r]
+    return cid
+
+
+def _cluster_sequential_octants_and_rings(
     xs: np.ndarray,
     ys: np.ndarray,
     lcx: np.ndarray,
     lcy: np.ndarray,
-    densities: list[int],
-) -> list[int]:
+    med_x: float,
+    med_y: float,
+    *,
+    link_dist: float = 7.8,
+) -> tuple[list[int], list[int], np.ndarray, np.ndarray, np.ndarray]:
     """
-    Assign octants **outside-in** (points farthest from the global median first) so
-    the shell of a dense cluster claims directions before the core. Per-point
-    conflict radius grows with local density. Outward-from-local-centroid preferred.
+    Points linked into a cluster get octants (start + 0,1,2,...) going around the
+    cluster by angle, and a sequential ring index k for stepped leader length.
+    Singletons: one octant from local outward vector, k=0.
+
+    Returns (oct_slots, seq_k, cluster_id, cluster_size_at_point, min_sep_other_cluster).
     """
     n = len(xs)
-    gx = float(np.median(xs))
-    gy = float(np.median(ys))
-    dist_med = (xs - gx) ** 2 + (ys - gy) ** 2
-    process_order = sorted(range(n), key=lambda i: float(dist_med[i]), reverse=True)
-    try_offsets = (0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7)
+    cid = _link_cluster_ids(xs, ys, link_dist)
+    by_c: dict[int, list[int]] = defaultdict(list)
+    for i in range(n):
+        by_c[int(cid[i])].append(i)
+    cent: dict[int, tuple[float, float]] = {}
+    for c, mem in by_c.items():
+        cent[c] = (float(np.mean(xs[mem])), float(np.mean(ys[mem])))
+    min_sep: dict[int, float] = {}
+    clist = list(cent.keys())
+    for c in clist:
+        cx, cy = cent[c]
+        best = 1e9
+        for d in clist:
+            if d == c:
+                continue
+            dx, dy = cent[d]
+            best = min(best, math.hypot(cx - dx, cy - dy))
+        min_sep[c] = float(best if best < 1e8 else 22.0)
+    size_arr = np.zeros(n, dtype=int)
+    sep_arr = np.zeros(n, dtype=float)
+    for c, mem in by_c.items():
+        for i in mem:
+            size_arr[i] = len(mem)
+            sep_arr[i] = min_sep[c]
     slots = [0] * n
-    assigned: dict[int, int] = {}
-    for idx in process_order:
-        xi, yi = float(xs[idx]), float(ys[idx])
-        dx = xi - float(lcx[idx])
-        dy = yi - float(lcy[idx])
-        if dx * dx + dy * dy < 1e-8:
-            preferred = (idx * 5) % 8
-        else:
-            preferred = _preferred_octant_outward(dx, dy)
-        dens_i = max(0, densities[idx])
-        cb = 6.4 + 0.62 * min(dens_i, 20)
-        b2 = cb * cb
-        taken: set[int] = set()
-        for j, sj in assigned.items():
-            if (xs[j] - xi) ** 2 + (ys[j] - yi) ** 2 <= b2:
-                taken.add(sj)
-        chosen = preferred
-        for off in try_offsets:
-            cand = (preferred + off) % 8
-            if cand not in taken:
-                chosen = cand
-                break
-        slots[idx] = chosen
-        assigned[idx] = chosen
-    return slots
+    seq_k = [0] * n
+    for c, mem in by_c.items():
+        if len(mem) == 1:
+            i = mem[0]
+            dx = float(xs[i]) - float(lcx[i])
+            dy = float(ys[i]) - float(lcy[i])
+            if dx * dx + dy * dy < 1e-8:
+                slots[i] = (i * 5) % 8
+            else:
+                slots[i] = _preferred_octant_outward(dx, dy)
+            seq_k[i] = 0
+            continue
+        cx, cy = cent[c]
+        start = _preferred_octant_outward(cx - med_x, cy - med_y)
+        order = sorted(
+            mem,
+            key=lambda i: math.atan2(float(ys[i]) - cy, float(xs[i]) - cx),
+        )
+        for k, i in enumerate(order):
+            slots[i] = (start + k) % 8
+            seq_k[i] = k
+    return slots, seq_k, cid, size_arr, sep_arr
+
+
+def _cluster_sequential_radius_px(
+    dens: int,
+    n_total: int,
+    rec_norm: float,
+    coord_stack: int,
+    *,
+    seq_k: int,
+    cluster_size: int,
+    min_sep_other: float,
+) -> float:
+    """
+    Leader length for points in a **multi-point** cluster: base from separation to
+    other clusters, then +step for each sequential ring index (short → long).
+    """
+    d = max(0, int(dens))
+    k = max(0, int(seq_k))
+    sz = max(2, int(cluster_size))
+    # Pull labels away from other groupings (data-unit gap → px); capped.
+    base = 24.0 + min(32.0, float(min_sep_other) * 0.92)
+    step = 9.8 + min(6.5, sz * 0.42)
+    r = base + k * step
+    r += 3.2 * min(d, 14)
+    r += 7.5 * rec_norm + 9.0 * (rec_norm**1.28)
+    r += 22.0 * int(coord_stack)
+    if n_total > 55:
+        r += 4.0
+    return float(min(130.0, r))
 
 
 def _quadrant_leader_label_annotations(
@@ -663,10 +718,10 @@ def _quadrant_leader_label_annotations(
     """
     Taxonomy-only labels (health interest = point color).
 
-    Octants aim outward from each local centroid; **outside-in** assignment (farther
-    from the chart median first) reserves directions for the shell before the core.
-    Inner blobs get longer leaders, duplicate (x,y) stacks stagger, and dense areas use
-    smaller/shorter text.
+    Points within ``link_dist`` form a **cluster**: labels walk octants sequentially
+    around the cluster (short leader, then next angle with a longer leader, …) while
+    a separation-based base keeps clusters away from other groupings. Isolated points
+    keep the prior density/rec-based radius.
     """
     n = len(plot_show)
     if n == 0:
@@ -678,15 +733,18 @@ def _quadrant_leader_label_annotations(
     if rc_max <= 0:
         rc_max = 1.0
     lcx, lcy = _local_centroids(xs, ys, 11.0)
-    depth = _inner_depth_ranks(xs, ys, lcx, lcy, wide=15.0)
     stack_ix = _coord_stack_indices(xs, ys, nd=2)
+    med_x = float(np.median(xs))
+    med_y = float(np.median(ys))
+    oct_slots, seq_k, _cid, size_arr, sep_arr = _cluster_sequential_octants_and_rings(
+        xs, ys, lcx, lcy, med_x, med_y, link_dist=7.8
+    )
     neigh_band = 6.0
     neigh_sq = neigh_band**2
     densities: list[int] = []
     for i in range(n):
         d2 = (xs - xs[i]) ** 2 + (ys - ys[i]) ** 2
         densities.append(int(np.sum(d2 <= neigh_sq)) - 1)
-    oct_slots = _assign_octant_slots(xs, ys, lcx, lcy, densities)
     fs = int(max(7, min(10, 14 - n // 8)))
     mchars = max(20, min(max_chars, 40 - n // 5))
     out: list[dict] = []
@@ -694,13 +752,24 @@ def _quadrant_leader_label_annotations(
         xi, yi = float(row[dx_col]), float(row[dy_col])
         dens = max(0, densities[idx])
         rec_norm = float(rc[idx]) / rc_max
-        r = _octant_leader_radius_px(
-            dens,
-            n,
-            rec_norm=rec_norm,
-            inner_depth=int(depth[idx]),
-            coord_stack=int(stack_ix[idx]),
-        )
+        sz = int(size_arr[idx])
+        if sz > 1:
+            r = _cluster_sequential_radius_px(
+                dens,
+                n,
+                rec_norm,
+                int(stack_ix[idx]),
+                seq_k=seq_k[idx],
+                cluster_size=sz,
+                min_sep_other=float(sep_arr[idx]),
+            )
+        else:
+            r = _octant_leader_radius_px(
+                dens,
+                n,
+                rec_norm=rec_norm,
+                coord_stack=int(stack_ix[idx]),
+            )
         du, dv = _QUADRANT_LABEL_OCTANTS[oct_slots[idx]]
         ln = math.hypot(float(du), float(dv))
         ax_pix = int(r * du / ln)
@@ -1385,10 +1454,11 @@ def main() -> None:
                     f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**, "
                     f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**. "
                     "Labels are **lowest taxonomy** only; **point color** is health interest. "
-                    "Labels use eight compass sides with distance scaled to crowding, bubble "
-                    "size, and depth inside a tight cluster; octants are chosen **outside-in** "
-                    "(shell before core). Identical positions stack with extra offset; dense "
-                    "areas use shorter text."
+                    "Labels use eight compass sides with distance scaled to crowding and bubble "
+                    "size. Points **close together** share a small cluster: each label steps to "
+                    "the next side with a **slightly longer** leader so lines fan out, while "
+                    "distance to other clusters stays generous. Identical positions stack with "
+                    "extra offset; dense areas use shorter text."
                 )
                 plot_show = plot_df.rename(
                     columns={
