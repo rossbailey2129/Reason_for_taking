@@ -528,28 +528,28 @@ def _quadrant_label_annotations() -> list[dict]:
             "x": 0.75,
             "y": y_above,
             "yanchor": "bottom",
-            "text": "High Condition Specificity &<br>High Category Specificity",
+            "text": "Core Specialists",
         },
         {
             **common,
             "x": 0.25,
             "y": y_above,
             "yanchor": "bottom",
-            "text": "Low Condition Specificity &<br>High Category Specificity",
+            "text": "Specialized Options",
         },
         {
             **common,
             "x": 0.25,
             "y": y_below,
             "yanchor": "top",
-            "text": "Low Condition Specificity &<br>Low Category Specificity",
+            "text": "Low Impact",
         },
         {
             **common,
             "x": 0.75,
             "y": y_below,
             "yanchor": "top",
-            "text": "High Condition Specificity &<br>Low Category Specificity",
+            "text": "Multi-use Staples",
         },
     ]
 
@@ -1300,7 +1300,7 @@ def main() -> None:
                     size="REC_COUNT",
                     color=HEALTH_COL,
                     text=_lbl_col,
-                    hover_name=LEAF_COL,
+                    custom_data=[LEAF_COL, HEALTH_COL],
                     labels={
                         x_col: "ln(share within health interest + 1) − cohort median",
                         y_col: "ln(share within lowest taxonomy + 1) − cohort median",
@@ -1312,7 +1312,10 @@ def main() -> None:
                     textposition="top center",
                     textfont=dict(family=FONT_FAMILY, size=9, color=CHART_TEXT),
                     marker=dict(line=dict(width=0.5, color="DarkSlateGrey")),
-                    hovertemplate="<b>%{hovertext}</b><extra></extra>",
+                    hovertemplate=(
+                        "Taxonomy: <b>%{customdata[0]}</b><br>"
+                        "Health interest: <b>%{customdata[1]}</b><extra></extra>"
+                    ),
                 )
                 fig_q.add_hline(
                     y=0,
