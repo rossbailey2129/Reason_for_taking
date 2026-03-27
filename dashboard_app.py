@@ -509,9 +509,10 @@ def _quadrant_point_label_annotations(
     max_chars: int = 30,
 ) -> list[dict]:
     """
-    Lowest-taxonomy labels with leader lines. Each label sits along the ray from
-    (0, 0) through the point—i.e. outward from both axis intercepts into that point’s
-    quadrant—with a small angle spread so nearby points do not share one direction.
+    Lowest-taxonomy labels with leader lines. Plotly draws the arrow **from the text
+    to the marker**, so the text is offset **toward (0, 0)** from the point along the
+    same radial line. The leader then runs **away from the median** toward the bubble
+    in that quadrant (not back toward the intercept).
     """
     n = len(plot_show)
     if n == 0:
@@ -542,9 +543,11 @@ def _quadrant_point_label_annotations(
         else:
             theta = math.atan2(yi, xi)
         theta_eff = theta + spread_angles[seq % n_spread]
-        # Data +y is up; screen +ay is down → flip sine for pixel offset.
-        u_ax = math.cos(theta_eff)
-        u_ay = -math.sin(theta_eff)
+        # Unit direction from origin → point in data; map to pixel offset (x same, y flipped).
+        # Use the **negation** so the label sits on the origin side of the marker: the
+        # arrow (text → point) then points outward from (0,0), not toward it.
+        u_ax = -math.cos(theta_eff)
+        u_ay = math.sin(theta_eff)
         rec_norm = float(rc[i]) / rc_max
         ring = seq // n_spread
         r = 38.0 + ring * 10.0 + 11.0 * rec_norm
@@ -1230,9 +1233,9 @@ def main() -> None:
                     f"Cohort medians (plotted points): "
                     f"{_metric_axis_label('SHARE_WITHIN_LOWEST_TAXONOMY')} = **{med_lt:.2f}**, "
                     f"{_metric_axis_label('SHARE_WITHIN_HEALTH_INTEREST')} = **{med_hi:.2f}**. "
-                    "**Point color** is health interest. Labels show lowest taxonomy, placed **outward "
-                    "from (0, 0)** along the ray through each point (away from both axis intercepts), "
-                    "with a small angle spread when many points share a direction."
+                    "**Point color** is health interest. Labels sit **between the median and the "
+                    "point** so leader lines run **from the label toward the bubble**, away from "
+                    "(0, 0), with a small angle spread when many points share a direction."
                 )
                 plot_show = plot_df.rename(
                     columns={
