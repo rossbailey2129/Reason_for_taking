@@ -41,7 +41,16 @@ SHARE_COLS = frozenset(
 _SHARE_UI_VERSION = 2
 # Quadrant tab: Top N widget session key (fresh key avoids stale “all taxa” values).
 _QUADRANT_TOP_N_KEY = "quad_top_n_chart"
+_LIFT_TOP_N_KEY = "lift_top_n_chart"
 _QUAD_PAIR_KEY_SEP = "\x1f"
+# Lift / enrichment tab (separate Plotly widget + label state from raw-share quadrant).
+_LIFT_PLOTLY_WIDGET_KEY = "lift_scatter_plotly"
+_LIFT_HIDDEN_LABEL_PAIRS_KEY = "lift_hidden_label_pairs"
+_LIFT_LABEL_RECO_LE_KEY = "lift_label_reco_le"
+_LIFT_LABEL_FORCE_SHOW_KEY = "lift_label_force_show_pairs"
+_LIFT_LABEL_PREV_HIDDEN_KEY = "lift_label_prev_hidden_snapshot"
+_LIFT_PLOTLY_LAST_SEL_SIG_KEY = "lift_plotly_selection_sig"
+_LIFT_LOG_RATIO_EPS = 1e-6
 # Quadrant: Plotly point selection toggles text labels (needs streamlit>=1.35).
 _QUAD_PLOTLY_WIDGET_KEY = "quad_scatter_plotly"
 _QUAD_HIDDEN_LABEL_PAIRS_KEY = "quad_hidden_label_pairs"
@@ -648,6 +657,121 @@ def _quadrant_plot_frame(
     return plot_df, med_hi, med_lt
 
 
+def _lift_plot_frame(
+    df: pd.DataFrame,
+    selected_interests: list[str],
+    top_n_taxonomies: int,
+) -> pd.DataFrame:
+    """
+    Same row filter as the raw-share quadrant (interests + top-N leaves by rec in slice).
+
+    Axes are **log lift** vs marginals in the **current filtered slice** ``df`` (sidebar +
+    tab excludes only — not the whole CSV):
+
+    - **x:** ``ln((share of cell within health interest + eps) / (marginal share of taxonomy + eps))``
+      — taxonomy over/under-indexed **within** that interest vs its global share in the slice.
+    - **y:** ``ln((share of cell within taxonomy + eps) / (marginal share of interest + eps))``
+      — interest over/under-indexed **within** that taxonomy vs its global share in the slice.
+
+    ``0`` on an axis means the conditional share matches the marginal (as expected if independent
+    in proportion to volume).
+    """
+    sub = (
+        df[df[HEALTH_COL].isin(selected_interests)]
+        if selected_interests
+        else df
+    )
+    if sub.empty:
+        return pd.DataFrame()
+    leaf_totals = sub.groupby(LEAF_COL, as_index=False)["REC_COUNT"].sum()
+    n_take = min(max(1, int(top_n_taxonomies)), len(leaf_totals))
+    top_leaves = leaf_totals.nlargest(n_take, "REC_COUNT")[LEAF_COL].tolist()
+    plot_df = sub[sub[LEAF_COL].isin(top_leaves)].copy()
+    if plot_df.empty:
+        return plot_df
+
+    total_rec = float(sub["REC_COUNT"].sum())
+    if total_rec <= 0:
+        return pd.DataFrame()
+
+    rec_by_leaf = sub.groupby(LEAF_COL)["REC_COUNT"].sum()
+    rec_by_hi = sub.groupby(HEALTH_COL)["REC_COUNT"].sum()
+    marg_leaf_pct = plot_df[LEAF_COL].map(rec_by_leaf) / total_rec * 100.0
+    marg_hi_pct = plot_df[HEALTH_COL].map(rec_by_hi) / total_rec * 100.0
+    den_hi = plot_df[HEALTH_COL].map(rec_by_hi).replace(0, np.nan)
+    den_leaf = plot_df[LEAF_COL].map(rec_by_leaf).replace(0, np.nan)
+    rc = plot_df["REC_COUNT"].astype(float)
+    within_hi_pct = (rc / den_hi * 100.0).fillna(0.0)
+    within_leaf_pct = (rc / den_leaf * 100.0).fillna(0.0)
+
+    eps = _LIFT_LOG_RATIO_EPS
+    ml = np.maximum(marg_leaf_pct.astype(float), 0.0) + eps
+    mh = np.maximum(marg_hi_pct.astype(float), 0.0) + eps
+    wh = np.maximum(within_hi_pct, 0.0) + eps
+    wl = np.maximum(within_leaf_pct, 0.0) + eps
+    plot_df["x_lift_log"] = np.log(wh / ml)
+    plot_df["y_lift_log"] = np.log(wl / mh)
+    plot_df["_lift_within_hi_pct"] = within_hi_pct
+    plot_df["_lift_within_leaf_pct"] = within_leaf_pct
+    plot_df["_lift_marg_leaf_pct"] = marg_leaf_pct.astype(float)
+    plot_df["_lift_marg_hi_pct"] = marg_hi_pct.astype(float)
+    return plot_df
+
+
+def _lift_axis_half_from_series(centered: pd.Series) -> float:
+    return _quadrant_axis_half_from_series(
+        centered, min_pts_pad=0.08, min_half=0.05
+    )
+
+
+def _lift_label_annotations() -> list[dict]:
+    """Quadrant corner labels for the lift / enrichment chart (0 = neutral on each axis)."""
+    fs = 11
+    bg = "rgba(255,255,255,0.88)"
+    common = dict(
+        xref="x domain",
+        yref="y domain",
+        showarrow=False,
+        font=dict(family=FONT_FAMILY, size=fs, color=CHART_TEXT),
+        opacity=1.0,
+        bgcolor=bg,
+        borderpad=3,
+        xanchor="center",
+    )
+    y_above = 1.05
+    y_below = -0.05
+    return [
+        {
+            **common,
+            "x": 0.75,
+            "y": y_above,
+            "yanchor": "bottom",
+            "text": "Dual enrichment",
+        },
+        {
+            **common,
+            "x": 0.25,
+            "y": y_above,
+            "yanchor": "bottom",
+            "text": "Taxonomy-led in interest",
+        },
+        {
+            **common,
+            "x": 0.25,
+            "y": y_below,
+            "yanchor": "top",
+            "text": "Below neutral both",
+        },
+        {
+            **common,
+            "x": 0.75,
+            "y": y_below,
+            "yanchor": "top",
+            "text": "Interest-led in taxonomy",
+        },
+    ]
+
+
 def _pair_key_from_plotly_point(pt: dict) -> str | None:
     cd = pt.get("customdata")
     if cd is None:
@@ -699,28 +823,35 @@ def _quadrant_selection_signature(points: list[dict]) -> str:
     return json.dumps(parts, default=str)
 
 
-def _quadrant_apply_plotly_label_toggle(plot_df: pd.DataFrame) -> None:
+def _scatter_tab_apply_plotly_label_toggle(
+    plot_df: pd.DataFrame,
+    *,
+    plotly_widget_key: str,
+    last_sel_sig_key: str,
+    reco_le_key: str,
+    hidden_pairs_key: str,
+    force_show_key: str,
+) -> None:
     """
-    React to Plotly point selection:
+    React to Plotly point selection (shared by raw-share quadrant and lift tab).
 
     - Pair is **manually** hidden: click removes it from the manual list; if rec ≤ threshold,
       add a force-show so the label appears despite the counter rule.
-    - Pair is not manually hidden and **rec ≤ threshold**: click toggles force-show only
-      (show label again vs let the counter hide it). Does not use the manual-hide list.
-    - Otherwise (rec above threshold or counter off): click toggles **manual** hide for the pair.
+    - Pair is not manually hidden and **rec ≤ threshold**: click toggles force-show only.
+    - Otherwise: click toggles **manual** hide for the pair.
     """
-    if _QUAD_PLOTLY_WIDGET_KEY not in st.session_state:
+    if plotly_widget_key not in st.session_state:
         return
-    pts = _quadrant_plotly_selection_points(st.session_state[_QUAD_PLOTLY_WIDGET_KEY])
+    pts = _quadrant_plotly_selection_points(st.session_state[plotly_widget_key])
     sig = _quadrant_selection_signature(pts)
-    if sig == st.session_state.get(_QUAD_PLOTLY_LAST_SEL_SIG_KEY):
+    if sig == st.session_state.get(last_sel_sig_key):
         return
-    st.session_state[_QUAD_PLOTLY_LAST_SEL_SIG_KEY] = sig
+    st.session_state[last_sel_sig_key] = sig
     if not pts:
         return
-    reco_le = int(st.session_state.get(_QUAD_LABEL_RECO_LE_KEY, 0) or 0)
-    hs = set(st.session_state.get(_QUAD_HIDDEN_LABEL_PAIRS_KEY) or [])
-    fs = set(st.session_state.get(_QUAD_LABEL_FORCE_SHOW_KEY) or [])
+    reco_le = int(st.session_state.get(reco_le_key, 0) or 0)
+    hs = set(st.session_state.get(hidden_pairs_key) or [])
+    fs = set(st.session_state.get(force_show_key) or [])
     for pt in pts:
         pk = _pair_key_from_plotly_point(pt)
         if not pk:
@@ -741,8 +872,19 @@ def _quadrant_apply_plotly_label_toggle(plot_df: pd.DataFrame) -> None:
             continue
         fs.discard(pk)
         hs.add(pk)
-    st.session_state[_QUAD_HIDDEN_LABEL_PAIRS_KEY] = sorted(hs)
-    st.session_state[_QUAD_LABEL_FORCE_SHOW_KEY] = sorted(fs)
+    st.session_state[hidden_pairs_key] = sorted(hs)
+    st.session_state[force_show_key] = sorted(fs)
+
+
+def _quadrant_apply_plotly_label_toggle(plot_df: pd.DataFrame) -> None:
+    _scatter_tab_apply_plotly_label_toggle(
+        plot_df,
+        plotly_widget_key=_QUAD_PLOTLY_WIDGET_KEY,
+        last_sel_sig_key=_QUAD_PLOTLY_LAST_SEL_SIG_KEY,
+        reco_le_key=_QUAD_LABEL_RECO_LE_KEY,
+        hidden_pairs_key=_QUAD_HIDDEN_LABEL_PAIRS_KEY,
+        force_show_key=_QUAD_LABEL_FORCE_SHOW_KEY,
+    )
 
 
 def _pair_max_rec_count(pair_key: str, plot_df: pd.DataFrame) -> float:
@@ -789,14 +931,21 @@ def _rec_count_from_plotly_point(
     return _pair_max_rec_count(pair_key, plot_df)
 
 
-def _quadrant_sync_label_force_show(plot_df: pd.DataFrame, reco_le: int) -> None:
+def _scatter_tab_sync_label_force_show(
+    plot_df: pd.DataFrame,
+    reco_le: int,
+    *,
+    prev_hidden_key: str,
+    hidden_pairs_key: str,
+    force_show_key: str,
+) -> None:
     """
     After Plotly handling: multiselect changes vs last run add/remove force-show overrides;
-    prune stale force-show entries. Manual hide always wins (force-show cannot apply to hidden pairs).
+    prune stale force-show entries. Manual hide always wins.
     """
-    prev_h = frozenset(st.session_state.get(_QUAD_LABEL_PREV_HIDDEN_KEY) or [])
-    curr_h = set(st.session_state.get(_QUAD_HIDDEN_LABEL_PAIRS_KEY) or [])
-    fs = set(st.session_state.get(_QUAD_LABEL_FORCE_SHOW_KEY) or [])
+    prev_h = frozenset(st.session_state.get(prev_hidden_key) or [])
+    curr_h = set(st.session_state.get(hidden_pairs_key) or [])
+    fs = set(st.session_state.get(force_show_key) or [])
 
     for pk in prev_h - curr_h:
         if reco_le > 0 and _pair_min_rec_count(pk, plot_df) <= float(reco_le):
@@ -812,8 +961,18 @@ def _quadrant_sync_label_force_show(plot_df: pd.DataFrame, reco_le: int) -> None
             if _pair_min_rec_count(pk, plot_df) > float(reco_le):
                 fs.discard(pk)
 
-    st.session_state[_QUAD_LABEL_FORCE_SHOW_KEY] = sorted(fs)
-    st.session_state[_QUAD_LABEL_PREV_HIDDEN_KEY] = sorted(curr_h)
+    st.session_state[force_show_key] = sorted(fs)
+    st.session_state[prev_hidden_key] = sorted(curr_h)
+
+
+def _quadrant_sync_label_force_show(plot_df: pd.DataFrame, reco_le: int) -> None:
+    _scatter_tab_sync_label_force_show(
+        plot_df,
+        reco_le,
+        prev_hidden_key=_QUAD_LABEL_PREV_HIDDEN_KEY,
+        hidden_pairs_key=_QUAD_HIDDEN_LABEL_PAIRS_KEY,
+        force_show_key=_QUAD_LABEL_FORCE_SHOW_KEY,
+    )
 
 
 def main() -> None:
@@ -1097,13 +1256,14 @@ def main() -> None:
         if c in df.columns
     ]
 
-    tab_table, tab_leaf, tab_hi, tab_matrix, tab_quadrant = st.tabs(
+    tab_table, tab_leaf, tab_hi, tab_matrix, tab_quadrant, tab_lift = st.tabs(
         [
             "Data table",
             "By lowest taxonomy",
             "By health interest",
             "Heatmap (top pairs)",
             "Condition focus VS Condition reliance",
+            "Lift / enrichment",
         ]
     )
 
@@ -1641,6 +1801,247 @@ def main() -> None:
                         disabled=not st.session_state.get("quad_show_point_labels", True),
                         help="Always hides the text for selected pairs. Deselecting restores the label; "
                         "if the rec ≤ counter would hide it, a chart click or deselect still applies a show override.",
+                    )
+
+    with tab_lift:
+        st.subheader("Lift / enrichment (vs slice marginals)")
+        st.caption(
+            "**Horizontal:** how much this lowest taxonomy is **over-indexed within the health interest** "
+            "vs its share of volume in the current filtered slice. "
+            "**Vertical:** how much the health interest is **over-indexed within the taxonomy** "
+            "vs its slice-wide share. "
+            "**0** on an axis means the conditional share matches that marginal (neutral). "
+            "Uses **REC_COUNT** in this slice only (sidebar + this tab’s excludes). "
+            "Leave **Health interests** empty to use every interest in the slice."
+        )
+        tab_lift_df = _tab_exclude_expander("lift", filtered)
+        if tab_lift_df.empty:
+            st.warning("No data after sidebar filters and this tab's excludes.")
+        else:
+            hi_opts_l = sorted_unique(tab_lift_df[HEALTH_COL])
+            sel_hi_l = st.multiselect(
+                "Health interests (empty = all)",
+                options=hi_opts_l,
+                default=[],
+                key="lift_sel_interests",
+                help="Restrict rows before Top N taxonomies (same logic as the raw-share quadrant).",
+            )
+            n_leaf_unique_l = max(1, len(sorted_unique(tab_lift_df[LEAF_COL])))
+            top_n_max_l = n_leaf_unique_l
+            lift_top_n_default = min(20, n_leaf_unique_l)
+            _lnk = _LIFT_TOP_N_KEY
+            if _lnk not in st.session_state:
+                st.session_state[_lnk] = lift_top_n_default
+            else:
+                try:
+                    cur_l = int(st.session_state[_lnk])
+                    if cur_l > top_n_max_l:
+                        st.session_state[_lnk] = top_n_max_l
+                    elif cur_l < 1:
+                        st.session_state[_lnk] = 1
+                except (TypeError, ValueError):
+                    st.session_state[_lnk] = lift_top_n_default
+            top_n_lift = st.number_input(
+                "Top N lowest taxonomies (by total rec count in slice)",
+                min_value=1,
+                max_value=top_n_max_l,
+                key=_lnk,
+                help="Plotted points are rows for those taxonomies (after interest filter).",
+            )
+            plot_lift = _lift_plot_frame(
+                tab_lift_df, sel_hi_l, int(top_n_lift)
+            )
+            if plot_lift.empty:
+                st.info("No rows for this selection after filters.")
+            else:
+                st.caption(
+                    f"**Reference:** marginals and conditional shares use the same filtered slice "
+                    f"({len(tab_lift_df):,} rows, {float(tab_lift_df['REC_COUNT'].sum()):,.0f} total rec count). "
+                    f"**ln** = natural log of (conditional % + ε) / (marginal % + ε)."
+                )
+                _pair_rows_l = (
+                    plot_lift[[LEAF_COL, HEALTH_COL]]
+                    .drop_duplicates()
+                    .sort_values([LEAF_COL, HEALTH_COL], kind="mergesort")
+                )
+                _pair_keys_l: list[str] = []
+                _pair_labels_l: dict[str, str] = {}
+                for _, _pr in _pair_rows_l.iterrows():
+                    _pk = f"{_pr[LEAF_COL]}{_QUAD_PAIR_KEY_SEP}{_pr[HEALTH_COL]}"
+                    _pair_keys_l.append(_pk)
+                    _pair_labels_l[_pk] = f"{_pr[LEAF_COL]} — {_pr[HEALTH_COL]}"
+                if _LIFT_HIDDEN_LABEL_PAIRS_KEY not in st.session_state:
+                    st.session_state[_LIFT_HIDDEN_LABEL_PAIRS_KEY] = []
+                if _LIFT_LABEL_RECO_LE_KEY not in st.session_state:
+                    st.session_state[_LIFT_LABEL_RECO_LE_KEY] = 0
+                if _LIFT_LABEL_FORCE_SHOW_KEY not in st.session_state:
+                    st.session_state[_LIFT_LABEL_FORCE_SHOW_KEY] = []
+                _reco_le_l = int(st.session_state.get(_LIFT_LABEL_RECO_LE_KEY, 0) or 0)
+                _scatter_tab_apply_plotly_label_toggle(
+                    plot_lift,
+                    plotly_widget_key=_LIFT_PLOTLY_WIDGET_KEY,
+                    last_sel_sig_key=_LIFT_PLOTLY_LAST_SEL_SIG_KEY,
+                    reco_le_key=_LIFT_LABEL_RECO_LE_KEY,
+                    hidden_pairs_key=_LIFT_HIDDEN_LABEL_PAIRS_KEY,
+                    force_show_key=_LIFT_LABEL_FORCE_SHOW_KEY,
+                )
+                _scatter_tab_sync_label_force_show(
+                    plot_lift,
+                    _reco_le_l,
+                    prev_hidden_key=_LIFT_LABEL_PREV_HIDDEN_KEY,
+                    hidden_pairs_key=_LIFT_HIDDEN_LABEL_PAIRS_KEY,
+                    force_show_key=_LIFT_LABEL_FORCE_SHOW_KEY,
+                )
+                _lift_show_lbl = st.session_state.get("lift_show_point_labels", True)
+                _lift_hidden_pairs = st.session_state.get(_LIFT_HIDDEN_LABEL_PAIRS_KEY, [])
+                _force_show_set_l = frozenset(
+                    st.session_state.get(_LIFT_LABEL_FORCE_SHOW_KEY) or []
+                )
+                x_col_l = "ln lift: taxonomy within interest"
+                y_col_l = "ln lift: interest within taxonomy"
+                plot_show_l = plot_lift.rename(
+                    columns={"x_lift_log": x_col_l, "y_lift_log": y_col_l}
+                )
+                _lbl_col_l = "lift_label_text"
+                _row_keys_l = (
+                    plot_show_l[LEAF_COL].astype(str)
+                    + _QUAD_PAIR_KEY_SEP
+                    + plot_show_l[HEALTH_COL].astype(str)
+                )
+                _hidden_set_l = frozenset(_lift_hidden_pairs)
+                if _reco_le_l > 0:
+                    _hide_lo_reco_l = plot_show_l["REC_COUNT"].astype(float) <= float(
+                        _reco_le_l
+                    )
+                else:
+                    _hide_lo_reco_l = pd.Series(False, index=plot_show_l.index)
+                if _lift_show_lbl:
+                    _no_label_l = _row_keys_l.isin(_hidden_set_l) | (
+                        _hide_lo_reco_l & ~_row_keys_l.isin(_force_show_set_l)
+                    )
+                    plot_show_l[_lbl_col_l] = np.where(
+                        _no_label_l,
+                        "",
+                        plot_show_l[LEAF_COL].astype(str),
+                    )
+                else:
+                    plot_show_l[_lbl_col_l] = ""
+                _hi_sorted_l = sorted(plot_show_l[HEALTH_COL].astype(str).unique())
+                _hi_color_map_l = {
+                    h: _HEALTH_INTEREST_LEGEND_COLORS[i % len(_HEALTH_INTEREST_LEGEND_COLORS)]
+                    for i, h in enumerate(_hi_sorted_l)
+                }
+                st.caption(
+                    "**Labels:** same as the other quadrant — rec count ≤ hides low-volume text; "
+                    "click markers to override; manual list always wins for hiding."
+                )
+                fig_l = px.scatter(
+                    plot_show_l,
+                    x=x_col_l,
+                    y=y_col_l,
+                    size="REC_COUNT",
+                    color=HEALTH_COL,
+                    text=_lbl_col_l,
+                    custom_data=[
+                        LEAF_COL,
+                        HEALTH_COL,
+                        "REC_COUNT",
+                        "_lift_within_hi_pct",
+                        "_lift_marg_leaf_pct",
+                        "_lift_within_leaf_pct",
+                        "_lift_marg_hi_pct",
+                        "SHARE_WITHIN_HEALTH_INTEREST",
+                        "SHARE_WITHIN_LOWEST_TAXONOMY",
+                    ],
+                    color_discrete_map=_hi_color_map_l,
+                    category_orders={HEALTH_COL: _hi_sorted_l},
+                    labels={
+                        x_col_l: "Taxonomy lift within interest (ln ratio)",
+                        y_col_l: "Interest lift within taxonomy (ln ratio)",
+                    },
+                    opacity=0.65,
+                )
+                fig_l.update_traces(
+                    mode="markers+text",
+                    textposition="top center",
+                    textfont=dict(family=FONT_FAMILY, size=9, color=CHART_TEXT),
+                    marker=dict(line=dict(width=0.5, color="DarkSlateGrey")),
+                    hovertemplate=(
+                        "Taxonomy: <b>%{customdata[0]}</b><br>"
+                        "Health interest: <b>%{customdata[1]}</b><br>"
+                        "Rec count: <b>%{customdata[2]:,.0f}</b><br>"
+                        "% within interest: <b>%{customdata[3]:.2f}%</b> "
+                        "(marginal taxonomy: <b>%{customdata[4]:.2f}%</b>)<br>"
+                        "% within taxonomy: <b>%{customdata[5]:.2f}%</b> "
+                        "(marginal interest: <b>%{customdata[6]:.2f}%</b>)<br>"
+                        "File share within interest: <b>%{customdata[7]:.2f}%</b><br>"
+                        "File share within taxonomy: <b>%{customdata[8]:.2f}%</b><extra></extra>"
+                    ),
+                )
+                fig_l.add_hline(
+                    y=0,
+                    line_width=1.5,
+                    line_dash="solid",
+                    line_color=CHART_TEXT,
+                    opacity=0.55,
+                )
+                fig_l.add_vline(
+                    x=0,
+                    line_width=1.5,
+                    line_dash="solid",
+                    line_color=CHART_TEXT,
+                    opacity=0.55,
+                )
+                x_half_l = _lift_axis_half_from_series(plot_show_l[x_col_l])
+                y_half_l = _lift_axis_half_from_series(plot_show_l[y_col_l])
+                fig_l.update_layout(
+                    font=_plot_base_font(),
+                    hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
+                    height=720,
+                    margin=dict(l=96, r=96, t=100, b=100),
+                    annotations=_lift_label_annotations(),
+                    xaxis=dict(range=[-x_half_l, x_half_l], zeroline=False),
+                    yaxis=dict(range=[-y_half_l, y_half_l], zeroline=False),
+                    legend=dict(
+                        title=dict(text="Health interest"),
+                        font=dict(family=FONT_FAMILY, color=CHART_TEXT),
+                    ),
+                )
+                fig_l.update_xaxes(tickfont=_tick_font(), title="")
+                fig_l.update_yaxes(tickfont=_tick_font(), title="")
+                st.plotly_chart(
+                    fig_l,
+                    key=_LIFT_PLOTLY_WIDGET_KEY,
+                    on_select="rerun",
+                    selection_mode="points",
+                    use_container_width=True,
+                )
+                with st.expander("Point labels (lift chart)", expanded=False):
+                    st.caption(
+                        "Turn names on or off, or hide specific pairs. Markers stay on the chart."
+                    )
+                    st.checkbox(
+                        "Show point labels (lowest taxonomy)",
+                        value=True,
+                        key="lift_show_point_labels",
+                    )
+                    _rc_max_l = int(plot_lift["REC_COUNT"].max())
+                    st.number_input(
+                        "Hide taxonomy label when rec count ≤ (0 = off)",
+                        min_value=0,
+                        max_value=max(_rc_max_l, 0),
+                        step=1,
+                        key=_LIFT_LABEL_RECO_LE_KEY,
+                        disabled=not st.session_state.get("lift_show_point_labels", True),
+                        help="Hides labels for points at this count or lower. Click a marker to show again.",
+                    )
+                    st.multiselect(
+                        "Manually hide labels for these pairs",
+                        options=_pair_keys_l,
+                        format_func=lambda k: _pair_labels_l[k],
+                        key=_LIFT_HIDDEN_LABEL_PAIRS_KEY,
+                        disabled=not st.session_state.get("lift_show_point_labels", True),
+                        help="Always hides the text for selected pairs.",
                     )
 
 
