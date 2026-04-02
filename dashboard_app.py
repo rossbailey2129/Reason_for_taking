@@ -661,20 +661,25 @@ def _lift_plot_frame(
     df: pd.DataFrame,
     selected_interests: list[str],
     top_n_taxonomies: int,
+    *,
+    marginal_df: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """
     Same row filter as the raw-share quadrant (interests + top-N leaves by rec in slice).
 
     **Conditional** shares (cell as % of its interest, cell as % of its taxonomy) use the
-    interest-filtered cohort ``sub``. **Marginal** baselines (% of all recs in the tab that are
-    that taxonomy / that interest) use the **full** tab frame ``df`` (all interests in this tab).
-    That avoids the degenerate case where a single-interest filter makes every marginal interest
-    share 100% and forces ``ln(1)=0`` on the y-axis.
+    interest-filtered cohort ``sub`` derived from ``df`` (lift tab rows + lift interest picker).
 
-    - **x:** ``ln((% within interest in sub + eps) / (marginal taxonomy % in full tab + eps))``
-    - **y:** ``ln((% within taxonomy in sub + eps) / (marginal interest % in full tab + eps))``
+    **Marginal** baselines (% of volume for that taxonomy / that interest) use ``marginal_df``
+    when passed (typically **all** health interests under the same sidebar taxonomy/rec/share
+    filters). If omitted, ``marginal_df`` defaults to ``df``. Using a wider ``marginal_df`` avoids
+    ``ln(1)=0`` when the tab or sidebar is restricted to one interest.
+
+    - **x:** ``ln((% within interest in sub + eps) / (marginal taxonomy % in marginal_df + eps))``
+    - **y:** ``ln((% within taxonomy in sub + eps) / (marginal interest % in marginal_df + eps))``
     """
-    marginal_df = df
+    if marginal_df is None:
+        marginal_df = df
     sub = (
         df[df[HEALTH_COL].isin(selected_interests)]
         if selected_interests
@@ -1240,6 +1245,20 @@ def main() -> None:
         taxonomy_selections,
         sel_health_areas,
         sel_interests,
+        rec_range[0],
+        rec_range[1],
+        share_lt[0],
+        share_lt[1],
+        share_hi[0],
+        share_hi[1],
+    )
+    # Same sidebar filters but **all** health interests — used for lift / enrichment marginals
+    # so narrowing “Health interests” in the sidebar does not collapse log-lift to (0, 0).
+    filtered_all_interests = apply_filters(
+        df,
+        taxonomy_selections,
+        sel_health_areas,
+        [],
         rec_range[0],
         rec_range[1],
         share_lt[0],
@@ -1814,9 +1833,9 @@ def main() -> None:
             "**Horizontal:** over-indexing of the taxonomy **within the health interest** (conditional "
             "vs marginal taxonomy share). **Vertical:** over-indexing of the interest **within the taxonomy** "
             "(conditional vs marginal interest share). **0** = neutral vs those baselines. "
-            "Conditionals use your **interest filter**; **marginals** use all interests in this tab so "
-            "single-interest views stay meaningful. **REC_COUNT** only (sidebar + tab excludes). "
-            "Leave **Health interests** empty to include every interest in the tab."
+            "**Marginals** use **all** health interests that pass the sidebar (ignoring the sidebar "
+            "interest picker); **conditionals** use this tab’s interest multiselect. **REC_COUNT** only. "
+            "Leave **Health interests** empty in this tab to use every interest that passed the sidebar."
         )
         tab_lift_df = _tab_exclude_expander("lift", filtered)
         if tab_lift_df.empty:
@@ -1853,16 +1872,29 @@ def main() -> None:
                 help="Plotted points are rows for those taxonomies (after interest filter).",
             )
             plot_lift = _lift_plot_frame(
-                tab_lift_df, sel_hi_l, int(top_n_lift)
+                tab_lift_df,
+                sel_hi_l,
+                int(top_n_lift),
+                marginal_df=filtered_all_interests,
             )
             if plot_lift.empty:
                 st.info("No rows for this selection after filters.")
             else:
+                _n_hi_ref = filtered_all_interests[HEALTH_COL].nunique()
+                if _n_hi_ref < 2:
+                    st.warning(
+                        "Only one health interest remains after sidebar filters, so marginals cannot "
+                        "separate interests — lift on **y** stays ~0. Widen sidebar filters or data "
+                        "to include more interests for a meaningful enrichment chart."
+                    )
                 st.caption(
-                    f"**Reference:** **Marginal** % (taxonomy / interest) = share of volume in this tab "
-                    f"with **all** interests ({len(tab_lift_df):,} rows, "
-                    f"{float(tab_lift_df['REC_COUNT'].sum()):,.0f} recs). **Conditional** % = within your "
-                    f"interest filter (and Top N). **ln** = natural log of (conditional % + ε) / (marginal % + ε)."
+                    f"**Reference:** **Marginal** % = share of volume across **all** health interests "
+                    f"that pass the sidebar (taxonomy / area / rec / share) filters "
+                    f"({len(filtered_all_interests):,} rows, "
+                    f"{float(filtered_all_interests['REC_COUNT'].sum()):,.0f} recs) — **not** narrowed "
+                    f"by the sidebar “Health interests” picker. **Conditional** % uses this tab’s rows "
+                    f"and the lift tab’s interest multiselect (+ Top N). "
+                    f"**ln** = natural log of (conditional % + ε) / (marginal % + ε)."
                 )
                 _pair_rows_l = (
                     plot_lift[[LEAF_COL, HEALTH_COL]]
@@ -1976,9 +2008,9 @@ def main() -> None:
                         "Health interest: <b>%{customdata[1]}</b><br>"
                         "Rec count: <b>%{customdata[2]:,.0f}</b><br>"
                         "% within interest (cohort): <b>%{customdata[3]:.2f}%</b> "
-                        "(marginal taxonomy, full tab: <b>%{customdata[4]:.2f}%</b>)<br>"
+                        "(marginal taxonomy, sidebar all interests: <b>%{customdata[4]:.2f}%</b>)<br>"
                         "% within taxonomy (cohort): <b>%{customdata[5]:.2f}%</b> "
-                        "(marginal interest, full tab: <b>%{customdata[6]:.2f}%</b>)<br>"
+                        "(marginal interest, sidebar all interests: <b>%{customdata[6]:.2f}%</b>)<br>"
                         "File share within interest: <b>%{customdata[7]:.2f}%</b><br>"
                         "File share within taxonomy: <b>%{customdata[8]:.2f}%</b><extra></extra>"
                     ),
