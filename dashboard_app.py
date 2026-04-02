@@ -663,42 +663,117 @@ def _lift_plot_frame(
     top_n_taxonomies: int,
     *,
     marginal_df: pd.DataFrame | None = None,
+    focal_health_areas: list[str] | None = None,
 ) -> pd.DataFrame:
     """
-    Same row filter as the raw-share quadrant (interests + top-N leaves by rec in slice).
+    Lift tab plotting frame.
 
-    **Conditional** shares (cell as % of its interest, cell as % of its taxonomy) use the
-    interest-filtered cohort ``sub`` derived from ``df`` (lift tab rows + lift interest picker).
+    **Global marginal mode** (no focal health areas): same as before — interest-filtered ``sub``
+    from ``df``, marginals from ``marginal_df`` (typically all interests **and** areas for the
+    sidebar taxonomy/rec/share filters).
 
-    **Marginal** baselines (% of volume for that taxonomy / that interest) use ``marginal_df``
-    when passed (typically **all** health interests under the same sidebar taxonomy/rec/share
-    filters). If omitted, ``marginal_df`` defaults to ``df``. Using a wider ``marginal_df`` avoids
-    ``ln(1)=0`` when the tab or sidebar is restricted to one interest.
+    **Focal health-area mode** (``focal_health_areas`` non-empty): only rows inside those areas
+    are plotted. ``marginal_df`` must include **both** focal and non-focal rows (e.g.
+    ``filtered_lift_baseline``). Then:
 
-    - **x:** ``ln((% within interest in sub + eps) / (marginal taxonomy % in marginal_df + eps))``
-    - **y:** ``ln((% within taxonomy in sub + eps) / (marginal interest % in marginal_df + eps))``
+    - **x:** ``ln((rec/(rec_H in focal) + ε) / (rec_out/(rec_H outside) + ε))`` — taxonomy’s
+      share of the interest **inside** the focal area(s) vs **outside** (other areas).
+    - **y:** ``ln((rec/(rec_T in focal) + ε) / (rec_out/(rec_T outside) + ε))`` — interest’s
+      share of the taxonomy inside focal vs outside.
+
+    ``0`` means the pair splits the same way in vs out of the focal area(s). Uses ``plot_df.attrs``:
+    ``lift_mode`` (``"area_vs_outside"`` | ``"global_marginal"``), optional ``lift_warning``.
     """
     if marginal_df is None:
         marginal_df = df
+    focal = (
+        frozenset(str(a) for a in focal_health_areas if str(a))
+        if focal_health_areas
+        else frozenset()
+    )
+
     sub = (
         df[df[HEALTH_COL].isin(selected_interests)]
         if selected_interests
         else df
     )
+    if focal:
+        sub = sub[sub[HEALTH_AREA_COL].astype(str).isin(focal)]
     if sub.empty:
-        return pd.DataFrame()
+        out = pd.DataFrame()
+        out.attrs["lift_mode"] = "global_marginal"
+        return out
+
     leaf_totals = sub.groupby(LEAF_COL, as_index=False)["REC_COUNT"].sum()
     n_take = min(max(1, int(top_n_taxonomies)), len(leaf_totals))
     top_leaves = leaf_totals.nlargest(n_take, "REC_COUNT")[LEAF_COL].tolist()
     plot_df = sub[sub[LEAF_COL].isin(top_leaves)].copy()
     if plot_df.empty:
-        return plot_df
+        out = pd.DataFrame()
+        out.attrs["lift_mode"] = "area_vs_outside" if focal else "global_marginal"
+        return out
 
-    total_sub = float(sub["REC_COUNT"].sum())
-    if total_sub <= 0:
-        return pd.DataFrame()
     total_ref = float(marginal_df["REC_COUNT"].sum())
     if total_ref <= 0:
+        out = pd.DataFrame()
+        return out
+
+    eps = _LIFT_LOG_RATIO_EPS
+    rc = plot_df["REC_COUNT"].astype(float)
+
+    use_area_lift = False
+    if focal:
+        ar = marginal_df[HEALTH_AREA_COL].astype(str)
+        in_ma = marginal_df[ar.isin(focal)]
+        out_ma = marginal_df[~ar.isin(focal)]
+        if in_ma.empty:
+            empty = pd.DataFrame()
+            empty.attrs["lift_mode"] = "global_marginal"
+            empty.attrs["lift_warning"] = (
+                "No rows for the selected health area(s) in the lift baseline."
+            )
+            return empty
+        if not out_ma.empty:
+            use_area_lift = True
+        else:
+            plot_df.attrs["lift_warning"] = (
+                "No volume **outside** the selected health area(s) in the baseline slice — "
+                "using **global marginal** lift instead (in-area vs all-area marginals)."
+            )
+
+    if use_area_lift:
+        rec_H_in = in_ma.groupby(HEALTH_COL)["REC_COUNT"].sum()
+        rec_H_out = out_ma.groupby(HEALTH_COL)["REC_COUNT"].sum()
+        rec_T_in = in_ma.groupby(LEAF_COL)["REC_COUNT"].sum()
+        rec_T_out = out_ma.groupby(LEAF_COL)["REC_COUNT"].sum()
+        rec_TH_out = out_ma.groupby([LEAF_COL, HEALTH_COL])["REC_COUNT"].sum()
+
+        H = plot_df[HEALTH_COL].astype(str)
+        T = plot_df[LEAF_COL].astype(str)
+        rh_in = H.map(rec_H_in).fillna(0.0).to_numpy(dtype=float)
+        rh_out = H.map(rec_H_out).fillna(0.0).to_numpy(dtype=float)
+        rt_in = T.map(rec_T_in).fillna(0.0).to_numpy(dtype=float)
+        rt_out = T.map(rec_T_out).fillna(0.0).to_numpy(dtype=float)
+        pair_ix = pd.MultiIndex.from_arrays([T, H])
+        rth_out = rec_TH_out.reindex(pair_ix).fillna(0.0).to_numpy(dtype=float)
+
+        num_x = rc.to_numpy(dtype=float) / np.maximum(rh_in, eps)
+        den_x = rth_out / np.maximum(rh_out, eps)
+        num_y = rc.to_numpy(dtype=float) / np.maximum(rt_in, eps)
+        den_y = rth_out / np.maximum(rt_out, eps)
+
+        plot_df["x_lift_log"] = np.log((num_x + eps) / (den_x + eps))
+        plot_df["y_lift_log"] = np.log((num_y + eps) / (den_y + eps))
+        plot_df["_lift_within_hi_pct"] = num_x * 100.0
+        plot_df["_lift_marg_leaf_pct"] = den_x * 100.0
+        plot_df["_lift_within_leaf_pct"] = num_y * 100.0
+        plot_df["_lift_marg_hi_pct"] = den_y * 100.0
+        plot_df.attrs["lift_mode"] = "area_vs_outside"
+        return plot_df
+
+    # --- global marginal lift (no focal areas) ---
+    total_sub = float(sub["REC_COUNT"].sum())
+    if total_sub <= 0:
         return pd.DataFrame()
 
     rec_by_leaf_sub = sub.groupby(LEAF_COL)["REC_COUNT"].sum()
@@ -710,11 +785,9 @@ def _lift_plot_frame(
     marg_hi_pct = plot_df[HEALTH_COL].map(rec_by_hi_ref) / total_ref * 100.0
     den_hi = plot_df[HEALTH_COL].map(rec_by_hi_sub).replace(0, np.nan)
     den_leaf = plot_df[LEAF_COL].map(rec_by_leaf_sub).replace(0, np.nan)
-    rc = plot_df["REC_COUNT"].astype(float)
     within_hi_pct = (rc / den_hi * 100.0).fillna(0.0)
     within_leaf_pct = (rc / den_leaf * 100.0).fillna(0.0)
 
-    eps = _LIFT_LOG_RATIO_EPS
     ml = np.maximum(marg_leaf_pct.astype(float), 0.0) + eps
     mh = np.maximum(marg_hi_pct.astype(float), 0.0) + eps
     wh = np.maximum(within_hi_pct, 0.0) + eps
@@ -725,6 +798,7 @@ def _lift_plot_frame(
     plot_df["_lift_within_leaf_pct"] = within_leaf_pct
     plot_df["_lift_marg_leaf_pct"] = marg_leaf_pct.astype(float)
     plot_df["_lift_marg_hi_pct"] = marg_hi_pct.astype(float)
+    plot_df.attrs["lift_mode"] = "global_marginal"
     return plot_df
 
 
@@ -1258,6 +1332,20 @@ def main() -> None:
         df,
         taxonomy_selections,
         sel_health_areas,
+        [],
+        rec_range[0],
+        rec_range[1],
+        share_lt[0],
+        share_lt[1],
+        share_hi[0],
+        share_hi[1],
+    )
+    # Taxonomy / area / rec / share filters only — **all** health areas and interests.
+    # Lets the lift tab compare focal health area(s) vs **other** areas without an empty “outside” slice.
+    filtered_lift_baseline = apply_filters(
+        df,
+        taxonomy_selections,
+        [],
         [],
         rec_range[0],
         rec_range[1],
@@ -1828,14 +1916,14 @@ def main() -> None:
                     )
 
     with tab_lift:
-        st.subheader("Lift / enrichment (vs slice marginals)")
+        st.subheader("Lift / enrichment")
         st.caption(
-            "**Horizontal:** over-indexing of the taxonomy **within the health interest** (conditional "
-            "vs marginal taxonomy share). **Vertical:** over-indexing of the interest **within the taxonomy** "
-            "(conditional vs marginal interest share). **0** = neutral vs those baselines. "
-            "**Marginals** use **all** health interests that pass the sidebar (ignoring the sidebar "
-            "interest picker); **conditionals** use this tab’s interest multiselect. **REC_COUNT** only. "
-            "Leave **Health interests** empty in this tab to use every interest that passed the sidebar."
+            "**With sidebar health area(s) selected:** each axis is **ln** of (share **inside** those "
+            "areas ÷ share **outside** them) — taxonomy’s role in the interest on **x**, interest’s role "
+            "in the taxonomy on **y**. **0** means the pair splits the same way in vs out of the focal "
+            "area(s). **Without** a health-area pick, axes use **global** marginals (all areas in the "
+            "baseline slice). Baseline = sidebar taxonomy + rec + share filters, **all** areas & interests; "
+            "plotted rows still respect sidebar area + this tab. **REC_COUNT** only."
         )
         tab_lift_df = _tab_exclude_expander("lift", filtered)
         if tab_lift_df.empty:
@@ -1875,27 +1963,36 @@ def main() -> None:
                 tab_lift_df,
                 sel_hi_l,
                 int(top_n_lift),
-                marginal_df=filtered_all_interests,
+                marginal_df=filtered_lift_baseline,
+                focal_health_areas=sel_health_areas or None,
             )
             if plot_lift.empty:
                 st.info("No rows for this selection after filters.")
             else:
-                _n_hi_ref = filtered_all_interests[HEALTH_COL].nunique()
-                if _n_hi_ref < 2:
+                _lw = plot_lift.attrs.get("lift_warning")
+                if _lw:
+                    st.warning(_lw)
+                _lift_mode = plot_lift.attrs.get("lift_mode", "global_marginal")
+                _n_hi_base = filtered_lift_baseline[HEALTH_COL].nunique()
+                if _lift_mode == "global_marginal" and _n_hi_base < 2:
                     st.warning(
-                        "Only one health interest remains after sidebar filters, so marginals cannot "
-                        "separate interests — lift on **y** stays ~0. Widen sidebar filters or data "
-                        "to include more interests for a meaningful enrichment chart."
+                        "Only one health interest in the lift baseline — **y**-axis global lift has "
+                        "little room to vary. Add interests in the data or relax filters."
                     )
-                st.caption(
-                    f"**Reference:** **Marginal** % = share of volume across **all** health interests "
-                    f"that pass the sidebar (taxonomy / area / rec / share) filters "
-                    f"({len(filtered_all_interests):,} rows, "
-                    f"{float(filtered_all_interests['REC_COUNT'].sum()):,.0f} recs) — **not** narrowed "
-                    f"by the sidebar “Health interests” picker. **Conditional** % uses this tab’s rows "
-                    f"and the lift tab’s interest multiselect (+ Top N). "
-                    f"**ln** = natural log of (conditional % + ε) / (marginal % + ε)."
-                )
+                if _lift_mode == "area_vs_outside":
+                    st.caption(
+                        f"**Focal area lift:** baseline **{len(filtered_lift_baseline):,}** rows / "
+                        f"**{float(filtered_lift_baseline['REC_COUNT'].sum()):,.0f}** recs (all health areas "
+                        f"in taxonomy/rec/share filters). Compares volume **inside** sidebar health "
+                        f"area(s) vs **outside**."
+                    )
+                else:
+                    st.caption(
+                        f"**Global marginal lift:** baseline **{len(filtered_lift_baseline):,}** rows / "
+                        f"**{float(filtered_lift_baseline['REC_COUNT'].sum()):,.0f}** recs (all areas & "
+                        f"interests). **Conditional** shares use this tab + interest multiselect (+ Top N). "
+                        f"**ln** = ratio of (conditional % + ε) to (marginal % + ε)."
+                    )
                 _pair_rows_l = (
                     plot_lift[[LEAF_COL, HEALTH_COL]]
                     .drop_duplicates()
@@ -1934,8 +2031,12 @@ def main() -> None:
                 _force_show_set_l = frozenset(
                     st.session_state.get(_LIFT_LABEL_FORCE_SHOW_KEY) or []
                 )
-                x_col_l = "ln lift: taxonomy within interest"
-                y_col_l = "ln lift: interest within taxonomy"
+                if _lift_mode == "area_vs_outside":
+                    x_col_l = "ln lift: T’s share of H (in area vs out)"
+                    y_col_l = "ln lift: H’s share of T (in area vs out)"
+                else:
+                    x_col_l = "ln lift: taxonomy within interest"
+                    y_col_l = "ln lift: interest within taxonomy"
                 plot_show_l = plot_lift.rename(
                     columns={"x_lift_log": x_col_l, "y_lift_log": y_col_l}
                 )
@@ -1998,22 +2099,37 @@ def main() -> None:
                     },
                     opacity=0.65,
                 )
+                _ht_lift = (
+                    (
+                        "Taxonomy: <b>%{customdata[0]}</b><br>"
+                        "Health interest: <b>%{customdata[1]}</b><br>"
+                        "Rec count: <b>%{customdata[2]:,.0f}</b><br>"
+                        "T’s share of H <b>inside</b> focal area(s): <b>%{customdata[3]:.2f}%</b><br>"
+                        "T’s share of H <b>outside</b> focal area(s): <b>%{customdata[4]:.2f}%</b><br>"
+                        "H’s share of T <b>inside</b> focal area(s): <b>%{customdata[5]:.2f}%</b><br>"
+                        "H’s share of T <b>outside</b> focal area(s): <b>%{customdata[6]:.2f}%</b><br>"
+                        "File share within interest: <b>%{customdata[7]:.2f}%</b><br>"
+                        "File share within taxonomy: <b>%{customdata[8]:.2f}%</b><extra></extra>"
+                    )
+                    if _lift_mode == "area_vs_outside"
+                    else (
+                        "Taxonomy: <b>%{customdata[0]}</b><br>"
+                        "Health interest: <b>%{customdata[1]}</b><br>"
+                        "Rec count: <b>%{customdata[2]:,.0f}</b><br>"
+                        "% within interest (cohort): <b>%{customdata[3]:.2f}%</b> "
+                        "(marginal taxonomy % in baseline: <b>%{customdata[4]:.2f}%</b>)<br>"
+                        "% within taxonomy (cohort): <b>%{customdata[5]:.2f}%</b> "
+                        "(marginal interest % in baseline: <b>%{customdata[6]:.2f}%</b>)<br>"
+                        "File share within interest: <b>%{customdata[7]:.2f}%</b><br>"
+                        "File share within taxonomy: <b>%{customdata[8]:.2f}%</b><extra></extra>"
+                    )
+                )
                 fig_l.update_traces(
                     mode="markers+text",
                     textposition="top center",
                     textfont=dict(family=FONT_FAMILY, size=9, color=CHART_TEXT),
                     marker=dict(line=dict(width=0.5, color="DarkSlateGrey")),
-                    hovertemplate=(
-                        "Taxonomy: <b>%{customdata[0]}</b><br>"
-                        "Health interest: <b>%{customdata[1]}</b><br>"
-                        "Rec count: <b>%{customdata[2]:,.0f}</b><br>"
-                        "% within interest (cohort): <b>%{customdata[3]:.2f}%</b> "
-                        "(marginal taxonomy, sidebar all interests: <b>%{customdata[4]:.2f}%</b>)<br>"
-                        "% within taxonomy (cohort): <b>%{customdata[5]:.2f}%</b> "
-                        "(marginal interest, sidebar all interests: <b>%{customdata[6]:.2f}%</b>)<br>"
-                        "File share within interest: <b>%{customdata[7]:.2f}%</b><br>"
-                        "File share within taxonomy: <b>%{customdata[8]:.2f}%</b><extra></extra>"
-                    ),
+                    hovertemplate=_ht_lift,
                 )
                 fig_l.add_hline(
                     y=0,
@@ -2036,7 +2152,11 @@ def main() -> None:
                     hoverlabel=dict(font=dict(family=FONT_FAMILY, size=13)),
                     height=720,
                     margin=dict(l=96, r=96, t=100, b=100),
-                    annotations=_lift_label_annotations(),
+                    annotations=(
+                        _quadrant_label_annotations()
+                        if _lift_mode == "area_vs_outside"
+                        else _lift_label_annotations()
+                    ),
                     xaxis=dict(range=[-x_half_l, x_half_l], zeroline=False),
                     yaxis=dict(range=[-y_half_l, y_half_l], zeroline=False),
                     legend=dict(
