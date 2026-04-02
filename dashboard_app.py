@@ -665,17 +665,16 @@ def _lift_plot_frame(
     """
     Same row filter as the raw-share quadrant (interests + top-N leaves by rec in slice).
 
-    Axes are **log lift** vs marginals in the **current filtered slice** ``df`` (sidebar +
-    tab excludes only — not the whole CSV):
+    **Conditional** shares (cell as % of its interest, cell as % of its taxonomy) use the
+    interest-filtered cohort ``sub``. **Marginal** baselines (% of all recs in the tab that are
+    that taxonomy / that interest) use the **full** tab frame ``df`` (all interests in this tab).
+    That avoids the degenerate case where a single-interest filter makes every marginal interest
+    share 100% and forces ``ln(1)=0`` on the y-axis.
 
-    - **x:** ``ln((share of cell within health interest + eps) / (marginal share of taxonomy + eps))``
-      — taxonomy over/under-indexed **within** that interest vs its global share in the slice.
-    - **y:** ``ln((share of cell within taxonomy + eps) / (marginal share of interest + eps))``
-      — interest over/under-indexed **within** that taxonomy vs its global share in the slice.
-
-    ``0`` on an axis means the conditional share matches the marginal (as expected if independent
-    in proportion to volume).
+    - **x:** ``ln((% within interest in sub + eps) / (marginal taxonomy % in full tab + eps))``
+    - **y:** ``ln((% within taxonomy in sub + eps) / (marginal interest % in full tab + eps))``
     """
+    marginal_df = df
     sub = (
         df[df[HEALTH_COL].isin(selected_interests)]
         if selected_interests
@@ -690,16 +689,22 @@ def _lift_plot_frame(
     if plot_df.empty:
         return plot_df
 
-    total_rec = float(sub["REC_COUNT"].sum())
-    if total_rec <= 0:
+    total_sub = float(sub["REC_COUNT"].sum())
+    if total_sub <= 0:
+        return pd.DataFrame()
+    total_ref = float(marginal_df["REC_COUNT"].sum())
+    if total_ref <= 0:
         return pd.DataFrame()
 
-    rec_by_leaf = sub.groupby(LEAF_COL)["REC_COUNT"].sum()
-    rec_by_hi = sub.groupby(HEALTH_COL)["REC_COUNT"].sum()
-    marg_leaf_pct = plot_df[LEAF_COL].map(rec_by_leaf) / total_rec * 100.0
-    marg_hi_pct = plot_df[HEALTH_COL].map(rec_by_hi) / total_rec * 100.0
-    den_hi = plot_df[HEALTH_COL].map(rec_by_hi).replace(0, np.nan)
-    den_leaf = plot_df[LEAF_COL].map(rec_by_leaf).replace(0, np.nan)
+    rec_by_leaf_sub = sub.groupby(LEAF_COL)["REC_COUNT"].sum()
+    rec_by_hi_sub = sub.groupby(HEALTH_COL)["REC_COUNT"].sum()
+    rec_by_leaf_ref = marginal_df.groupby(LEAF_COL)["REC_COUNT"].sum()
+    rec_by_hi_ref = marginal_df.groupby(HEALTH_COL)["REC_COUNT"].sum()
+
+    marg_leaf_pct = plot_df[LEAF_COL].map(rec_by_leaf_ref) / total_ref * 100.0
+    marg_hi_pct = plot_df[HEALTH_COL].map(rec_by_hi_ref) / total_ref * 100.0
+    den_hi = plot_df[HEALTH_COL].map(rec_by_hi_sub).replace(0, np.nan)
+    den_leaf = plot_df[LEAF_COL].map(rec_by_leaf_sub).replace(0, np.nan)
     rc = plot_df["REC_COUNT"].astype(float)
     within_hi_pct = (rc / den_hi * 100.0).fillna(0.0)
     within_leaf_pct = (rc / den_leaf * 100.0).fillna(0.0)
@@ -1806,13 +1811,12 @@ def main() -> None:
     with tab_lift:
         st.subheader("Lift / enrichment (vs slice marginals)")
         st.caption(
-            "**Horizontal:** how much this lowest taxonomy is **over-indexed within the health interest** "
-            "vs its share of volume in the current filtered slice. "
-            "**Vertical:** how much the health interest is **over-indexed within the taxonomy** "
-            "vs its slice-wide share. "
-            "**0** on an axis means the conditional share matches that marginal (neutral). "
-            "Uses **REC_COUNT** in this slice only (sidebar + this tab’s excludes). "
-            "Leave **Health interests** empty to use every interest in the slice."
+            "**Horizontal:** over-indexing of the taxonomy **within the health interest** (conditional "
+            "vs marginal taxonomy share). **Vertical:** over-indexing of the interest **within the taxonomy** "
+            "(conditional vs marginal interest share). **0** = neutral vs those baselines. "
+            "Conditionals use your **interest filter**; **marginals** use all interests in this tab so "
+            "single-interest views stay meaningful. **REC_COUNT** only (sidebar + tab excludes). "
+            "Leave **Health interests** empty to include every interest in the tab."
         )
         tab_lift_df = _tab_exclude_expander("lift", filtered)
         if tab_lift_df.empty:
@@ -1855,9 +1859,10 @@ def main() -> None:
                 st.info("No rows for this selection after filters.")
             else:
                 st.caption(
-                    f"**Reference:** marginals and conditional shares use the same filtered slice "
-                    f"({len(tab_lift_df):,} rows, {float(tab_lift_df['REC_COUNT'].sum()):,.0f} total rec count). "
-                    f"**ln** = natural log of (conditional % + ε) / (marginal % + ε)."
+                    f"**Reference:** **Marginal** % (taxonomy / interest) = share of volume in this tab "
+                    f"with **all** interests ({len(tab_lift_df):,} rows, "
+                    f"{float(tab_lift_df['REC_COUNT'].sum()):,.0f} recs). **Conditional** % = within your "
+                    f"interest filter (and Top N). **ln** = natural log of (conditional % + ε) / (marginal % + ε)."
                 )
                 _pair_rows_l = (
                     plot_lift[[LEAF_COL, HEALTH_COL]]
@@ -1970,10 +1975,10 @@ def main() -> None:
                         "Taxonomy: <b>%{customdata[0]}</b><br>"
                         "Health interest: <b>%{customdata[1]}</b><br>"
                         "Rec count: <b>%{customdata[2]:,.0f}</b><br>"
-                        "% within interest: <b>%{customdata[3]:.2f}%</b> "
-                        "(marginal taxonomy: <b>%{customdata[4]:.2f}%</b>)<br>"
-                        "% within taxonomy: <b>%{customdata[5]:.2f}%</b> "
-                        "(marginal interest: <b>%{customdata[6]:.2f}%</b>)<br>"
+                        "% within interest (cohort): <b>%{customdata[3]:.2f}%</b> "
+                        "(marginal taxonomy, full tab: <b>%{customdata[4]:.2f}%</b>)<br>"
+                        "% within taxonomy (cohort): <b>%{customdata[5]:.2f}%</b> "
+                        "(marginal interest, full tab: <b>%{customdata[6]:.2f}%</b>)<br>"
                         "File share within interest: <b>%{customdata[7]:.2f}%</b><br>"
                         "File share within taxonomy: <b>%{customdata[8]:.2f}%</b><extra></extra>"
                     ),
